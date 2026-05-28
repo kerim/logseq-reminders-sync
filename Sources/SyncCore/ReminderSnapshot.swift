@@ -9,6 +9,7 @@ public struct ReminderSnapshot: Sendable, Equatable {
     public let completionDate: Date?
     public let lastModified: Date?
     public let dueComponents: DateComponents?
+    public let priority: Int
 
     public init(
         localId: String,
@@ -18,7 +19,8 @@ public struct ReminderSnapshot: Sendable, Equatable {
         isCompleted: Bool,
         completionDate: Date?,
         lastModified: Date?,
-        dueComponents: DateComponents?
+        dueComponents: DateComponents?,
+        priority: Int = 0
     ) {
         self.localId = localId
         self.extId = extId
@@ -28,5 +30,6 @@ public struct ReminderSnapshot: Sendable, Equatable {
         self.completionDate = completionDate
         self.lastModified = lastModified
         self.dueComponents = dueComponents
+        self.priority = priority
     }
 }

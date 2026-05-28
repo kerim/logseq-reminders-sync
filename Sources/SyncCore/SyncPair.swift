@@ -29,6 +29,8 @@ public struct SyncPair: Codable, Sendable {
     public var pendingRotation: Bool
     /// Counts passes where rotation was pending but conditions weren't met.
     public var rotationAttempts: Int
+    /// Last observed Logseq priority, post-Low-filter (so `.low` is stored as `nil`).
+    public var lastPriority: LogseqPriority?
 
     public init(
         logseqUUID: String,
@@ -44,7 +46,8 @@ public struct SyncPair: Codable, Sendable {
         lastDueDateMs: Int64? = nil,
         lastDueSource: LogseqDateField? = nil,
         pendingRotation: Bool = false,
-        rotationAttempts: Int = 0
+        rotationAttempts: Int = 0,
+        lastPriority: LogseqPriority? = nil
     ) {
         self.logseqUUID = logseqUUID
         self.reminderLocalId = reminderLocalId
@@ -60,6 +63,7 @@ public struct SyncPair: Codable, Sendable {
         self.lastDueSource = lastDueSource
         self.pendingRotation = pendingRotation
         self.rotationAttempts = rotationAttempts
+        self.lastPriority = lastPriority
     }
 
     // MARK: - Codable (explicit for backward-compat: new fields use decodeIfPresent)
@@ -71,6 +75,7 @@ public struct SyncPair: Codable, Sendable {
         case lastTitle, lastNotesHash
         case lastDueDateMs, lastDueSource
         case pendingRotation, rotationAttempts
+        case lastPriority
     }
 
     public init(from decoder: Decoder) throws {
@@ -90,6 +95,11 @@ public struct SyncPair: Codable, Sendable {
         lastDueSource     = try c.decodeIfPresent(LogseqDateField.self,  forKey: .lastDueSource)
         pendingRotation   = try c.decodeIfPresent(Bool.self,             forKey: .pendingRotation)   ?? false
         rotationAttempts  = try c.decodeIfPresent(Int.self,              forKey: .rotationAttempts)  ?? 0
+        // Tolerant decode: a future "Critical" rawValue would otherwise throw
+        // dataCorrupted (decodeIfPresent doesn't swallow rawValue failures) and
+        // tank the whole SyncPair decode. try? also swallows type-mismatch — accepted
+        // as defense-in-depth since state.json is local and single-writer.
+        lastPriority      = (try? c.decodeIfPresent(LogseqPriority.self, forKey: .lastPriority)) ?? nil
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -108,6 +118,7 @@ public struct SyncPair: Codable, Sendable {
         try c.encodeIfPresent(lastDueSource,  forKey: .lastDueSource)
         try c.encode(pendingRotation,   forKey: .pendingRotation)
         try c.encode(rotationAttempts,  forKey: .rotationAttempts)
+        try c.encodeIfPresent(lastPriority, forKey: .lastPriority)
     }
 }
 

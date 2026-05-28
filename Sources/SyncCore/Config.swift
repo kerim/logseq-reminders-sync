@@ -10,6 +10,8 @@ public struct Config: Codable {
     public let filterQueryFile: String
     /// Whether to sync due dates in both directions. Replaces `syncDeadlines`.
     public let syncDates: Bool
+    /// Whether to sync task priority. Defaults to true (opt-out) for legacy configs.
+    public let syncPriority: Bool
 
     public static let configDir: URL = {
         FileManager.default.homeDirectoryForCurrentUser
@@ -28,6 +30,7 @@ public struct Config: Codable {
         case graph, remindersListId, remindersListTitle
         case journalInboxTitle, fallbackInboxPage, conflictPolicy, filterQueryFile
         case syncDates
+        case syncPriority
     }
 
     public init(from decoder: Decoder) throws {
@@ -46,6 +49,7 @@ public struct Config: Codable {
             let legacy = try decoder.container(keyedBy: LegacyCodingKeys.self)
             syncDates = (try? legacy.decode(Bool.self, forKey: .syncDeadlines)) ?? false
         }
+        syncPriority = (try? c.decodeIfPresent(Bool.self, forKey: .syncPriority)) ?? true
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -58,6 +62,7 @@ public struct Config: Codable {
         try c.encode(conflictPolicy,     forKey: .conflictPolicy)
         try c.encode(filterQueryFile,    forKey: .filterQueryFile)
         try c.encode(syncDates,          forKey: .syncDates)
+        try c.encode(syncPriority,       forKey: .syncPriority)
     }
 
     private enum LegacyCodingKeys: String, CodingKey {

@@ -12,11 +12,13 @@ struct PropertyIdents {
 struct LogseqClient {
     let cliPath: String
     let graph: String
+    let logger: RunLogger?
     private(set) var propertyIdents: PropertyIdents?
 
-    init(cliPath: String, graph: String) {
+    init(cliPath: String, graph: String, logger: RunLogger? = nil) {
         self.cliPath = cliPath
         self.graph = graph
+        self.logger = logger
     }
 
     // MARK: - Bootstrap
@@ -80,13 +82,14 @@ struct LogseqClient {
             """)
 
         var byUUID: [String: (title: String, updatedAt: Int64,
-                               deadline: Int?, scheduled: Int?)] = [:]
+                               deadline: Int?, scheduled: Int?,
+                               priority: LogseqPriority?)] = [:]
         if let rows = baseRows as? [[Any]] {
             for row in rows {
                 guard let uuid = row[0] as? String,
                       let title = row[1] as? String,
                       let updated = jsonInt64(row[2]) else { continue }
-                byUUID[uuid] = (title, updated, nil, nil)
+                byUUID[uuid] = (title, updated, nil, nil, nil)
             }
         }
 
@@ -118,6 +121,26 @@ struct LogseqClient {
             }
         }
 
+        // Priority (only blocks that have one)
+        let priorityRows = try await query("""
+            [:find ?uuid ?prio-title
+             :where [?b :logseq.property/status ?s] [?s :block/title "Doing"]
+                    [?b :block/uuid ?uuid]
+                    [?b :logseq.property/priority ?p]
+                    [?p :block/title ?prio-title]]
+            """)
+        if let rows = priorityRows as? [[Any]] {
+            for row in rows {
+                guard let uuid = row[0] as? String, let title = row[1] as? String,
+                      byUUID[uuid] != nil else { continue }
+                if let prio = LogseqPriority(rawValue: title) {
+                    byUUID[uuid]!.priority = prio
+                } else {
+                    logger?.log("WARN: unknown Logseq priority '\(title)' on block \(uuid.prefix(8))…")
+                }
+            }
+        }
+
         // Recurrence flag for Doing tasks
         let recurRows = try await query("""
             [:find ?uuid
@@ -134,7 +157,8 @@ struct LogseqClient {
         return byUUID.map { uuid, meta in
             LogseqBlock(uuid: uuid, title: meta.title, updatedAt: meta.updatedAt,
                         status: "Doing", deadline: meta.deadline, scheduled: meta.scheduled,
-                        isRecurring: recurringUUIDs.contains(uuid))
+                        isRecurring: recurringUUIDs.contains(uuid),
+                        priority: meta.priority)
         }
     }
 
@@ -183,9 +207,28 @@ struct LogseqClient {
         if let rRows = recurResult as? [[Any]], let rRow = rRows.first,
            let r = rRow[0] as? Bool { isRecurring = r } else { isRecurring = false }
 
+        let priorityResult = try await query("""
+            [:find ?prio-title
+             :where [?b :block/uuid #uuid "\(uuid)"]
+                    [?b :logseq.property/priority ?p]
+                    [?p :block/title ?prio-title]]
+            """)
+        let priority: LogseqPriority?
+        if let pRows = priorityResult as? [[Any]], let pRow = pRows.first,
+           let pTitle = pRow[0] as? String {
+            if let parsed = LogseqPriority(rawValue: pTitle) {
+                priority = parsed
+            } else {
+                logger?.log("WARN: unknown Logseq priority '\(pTitle)' on block \(uuid.prefix(8))…")
+                priority = nil
+            }
+        } else {
+            priority = nil
+        }
+
         return LogseqBlock(uuid: retUUID, title: title, updatedAt: updatedAt,
                            status: status, deadline: deadline, scheduled: scheduled,
-                           isRecurring: isRecurring)
+                           isRecurring: isRecurring, priority: priority)
     }
 
     // MARK: - Page title resolution (for [[uuid]] page-refs)
@@ -302,6 +345,20 @@ struct LogseqClient {
         ])
     }
 
+    func setBlockPriority(blockUUID: String, priority: LogseqPriority) async throws {
+        _ = try await run([
+            "upsert", "task", "-g", graph,
+            "--uuid", blockUUID, "--priority", priority.rawValue, "--output", "json"
+        ])
+    }
+
+    func clearBlockPriority(blockUUID: String) async throws {
+        _ = try await run([
+            "upsert", "task", "-g", graph,
+            "--uuid", blockUUID, "--no-priority", "--output", "json"
+        ])
+    }
+
     // MARK: - Journal / capture ingest
 
     static func journalPageName(for date: Date = Date()) -> String {
@@ -346,7 +403,8 @@ struct LogseqClient {
     func createCaptureTask(
         inboxBlockUUID: String,
         title: String,
-        capturedExtId: String
+        capturedExtId: String,
+        priority: LogseqPriority? = nil
     ) async throws -> String {
         guard let idents = propertyIdents else { throw LogseqError.notBootstrapped }
         // Use upsert block with content + properties (atomic).
@@ -359,12 +417,16 @@ struct LogseqClient {
         ])
         let blockUUID = try await extractCreatedUUID(from: createResult, context: "capture task")
         // Promote to a #Task node with Todo status (captures land in inbox for triage)
-        _ = try? await run([
+        var promoteArgs = [
             "upsert", "task", "-g", graph,
             "--uuid", blockUUID,
-            "--status", "Todo",
-            "--output", "json"
-        ])
+            "--status", "Todo"
+        ]
+        if let priority {
+            promoteArgs.append(contentsOf: ["--priority", priority.rawValue])
+        }
+        promoteArgs.append(contentsOf: ["--output", "json"])
+        _ = try? await run(promoteArgs)
         return blockUUID
     }
 

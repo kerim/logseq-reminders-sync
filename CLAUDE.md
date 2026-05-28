@@ -42,10 +42,12 @@ Read `SyncEngine.run()` top-to-bottom — it's the source of truth. The shape:
 2. **The idempotency anchors live in Logseq, not in state.json.** Each mirrored Logseq block carries `reminder-id` = the reminder's `calendarItemExternalIdentifier` (extId). Each captured journal block carries `captured-reminder-id` = the source reminder's extId. The state file is a performance cache and is rebuildable from those properties — see Steps 3(c) "Reindex guard" and 4.5 "Rebuild pairs" in `SyncEngine.run()`.
 
 3. **Two flows, one engine:**
-   - **Mirror flow** (Logseq → Reminders): every `Doing` task with no paired reminder gets one created; its extId is written back to the block as `reminder-id`. Status changes propagate both ways via 3-way merge against `SyncPair.lastStatus` / `.lastCompleted`. Title and child-block text propagate one-way (Logseq → Reminders notes).
-   - **Capture flow** (Reminders → Logseq): a reminder created by the user directly in the configured list (no matching `reminder-id` anywhere) becomes a `Todo` block under today's journal `📥 Inbox` (or whatever `journalInboxTitle` is configured), tagged with `captured-reminder-id`. The source reminder is then completed.
+   - **Mirror flow** (Logseq → Reminders): every `Doing` task with no paired reminder gets one created; its extId is written back to the block as `reminder-id`. Three independent axes propagate bidirectionally, each via its own 3-way merge against a dedicated `SyncPair` baseline field: **status** (`lastStatus` / `lastCompleted`), **dates** (`lastDueDateMs` / `lastDueSource`, gated by `syncDates`), and **priority** (`lastPriority`, gated by `syncPriority`). Title and child-block text propagate one-way (Logseq → Reminders notes).
+   - **Capture flow** (Reminders → Logseq): a reminder created by the user directly in the configured list (no matching `reminder-id` anywhere) becomes a `Todo` block under today's journal `📥 Inbox` (or whatever `journalInboxTitle` is configured), tagged with `captured-reminder-id`. The source reminder is then completed. Priority and due date carry over (Apple → Logseq) at capture time when their respective config toggles are on.
 
-4. **Conflict resolution** is most-recent-wins by `:block/updated-at` (ms) vs. `EKReminder.lastModifiedDate` (ms). Ties result in no write. `lastOpenStatus` is preserved so un-completing a reminder restores the right open status (`Doing`/`Todo`/`Backlog`/`In Review`) rather than always defaulting to `Doing`.
+4. **Conflict resolution** is most-recent-wins by `:block/updated-at` (ms) vs. `EKReminder.lastModifiedDate` (ms). Ties fold into Logseq-wins so single-field baselines stay convergent. `lastOpenStatus` is preserved so un-completing a reminder restores the right open status (`Doing`/`Todo`/`Backlog`/`In Review`) rather than always defaulting to `Doing`.
+
+   **Priority bucketing.** Logseq has 4 priority levels (`Urgent`/`High`/`Medium`/`Low`); Apple Reminders uses RFC 5545 ints (1=High, 5=Medium, 9=Low, 0=none) with intra-bucket ranges. `Mapper.logseqPriorityToReminder` shifts one step down (`Urgent→1`, `High→5`, `Medium→9`, `Low→0`); the reverse mapping buckets `1...4→.urgent`, `5...8→.high`, `9→.medium`. Logseq `Low` is treated as "no priority" (normalized via `LogseqPriority.forSync`) and never appears on the reverse path. Comparisons in `mergePriority` happen in Logseq enum space so Apple's intra-bucket drift (e.g. 5→7) doesn't trigger spurious change signals.
 
 5. **Text transformation pipeline** (`Mapper.plainText`): resolve `[[uuid]]` page-refs to titles via Logseq query → strip `[[Page]]` wrappers / `#tags` / `((block-refs))` → run through Foundation's markdown parser to drop `**bold**` / `*italic*` / `` `code` `` / `[label](url)`. Child blocks of the task become reminder notes, one line each. This is in `SyncCore` and is what most tests cover.
 
@@ -53,7 +55,7 @@ Read `SyncEngine.run()` top-to-bottom — it's the source of truth. The shape:
 
 The binary reads and writes only under `~/.logseq-reminders-sync/`:
 
-- `config.json` — `graph`, `remindersListTitle`, `remindersListId`, `journalInboxTitle`, `fallbackInboxPage`, `conflictPolicy`, `filterQueryFile`, `syncDeadlines`. Decoded by `Config.load()`.
+- `config.json` — `graph`, `remindersListTitle`, `remindersListId`, `journalInboxTitle`, `fallbackInboxPage`, `conflictPolicy`, `filterQueryFile`, `syncDates` (opt-in, default `false`; reads legacy `syncDeadlines` if present), `syncPriority` (opt-out, default `true`). Decoded by `Config.load()`.
 - `state.json` — `SyncState` (pairs + captures + lastRunDate). Pretty-printed, sorted keys, atomic writes.
 - `log/YYYY-MM-DD.log` — daily run log, also tee'd to stdout via `RunLogger`.
 - `lock` — PID file; `Lockfile.acquire()` uses `kill(pid, 0)` to test liveness, so stale lockfiles from crashes are auto-recovered.

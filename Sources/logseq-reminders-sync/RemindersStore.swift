@@ -78,13 +78,19 @@ actor RemindersStore {
 
     // MARK: - Writing
 
-    func createReminder(title: String, notes: String, dueComponents: DateComponents?) throws -> ReminderSnapshot {
+    func createReminder(
+        title: String,
+        notes: String,
+        dueComponents: DateComponents?,
+        priority: Int = 0
+    ) throws -> ReminderSnapshot {
         guard let cal = calendar else { throw RemindersError.calendarNotResolved }
         let reminder = EKReminder(eventStore: store)
         reminder.calendar = cal
         reminder.title = title
         reminder.notes = notes
         reminder.dueDateComponents = dueComponents
+        reminder.priority = priority
         try store.save(reminder, commit: true)
         return Self.snapshot(from: reminder)
     }
@@ -125,6 +131,13 @@ actor RemindersStore {
         try store.save(item, commit: true)
     }
 
+    /// Explicitly set priority. Pass 0 to clear. Treats "not found" as success.
+    func setPriority(localId: String, _ priority: Int) throws {
+        guard let item = store.calendarItem(withIdentifier: localId) as? EKReminder else { return }
+        item.priority = priority
+        try store.save(item, commit: true)
+    }
+
     /// Complete a reminder by localId. Treats "not found" as success.
     func completeReminder(localId: String) throws {
         guard let item = store.calendarItem(withIdentifier: localId) as? EKReminder else { return }
@@ -150,7 +163,8 @@ actor RemindersStore {
             isCompleted: reminder.isCompleted,
             completionDate: reminder.completionDate,
             lastModified: reminder.lastModifiedDate,
-            dueComponents: reminder.dueDateComponents
+            dueComponents: reminder.dueDateComponents,
+            priority: reminder.priority
         )
     }
 }

@@ -3,8 +3,8 @@ import SyncCore
 
 @main
 struct App {
-    // BUILD 16 (local-tz date conversion + midnight = date-only heuristic)
-    static let buildVersion = "16"
+    // BUILD 17 (priority sync)
+    static let buildVersion = "17"
     static let appVersion = "0.1.0"
 
     static let cliPath = "/Users/niyaro/.local/bin/logseq"
@@ -77,7 +77,7 @@ struct App {
 
         // Bootstrap Logseq client
         logger.log("Bootstrapping Logseq client for graph '\(config.graph)'...")
-        var logseqClient = LogseqClient(cliPath: cliPath, graph: config.graph)
+        var logseqClient = LogseqClient(cliPath: cliPath, graph: config.graph, logger: logger)
         try await logseqClient.bootstrap()
 
         // Run engine
@@ -116,6 +116,7 @@ struct App {
             if let notes = r.notes, !notes.isEmpty {
                 print("    notes: \(notes.prefix(80))")
             }
+            print("    priority: \(formatReminderPriority(r.priority))")
         }
 
         let since = Calendar.current.date(byAdding: .day, value: -7, to: Date())!
@@ -123,6 +124,7 @@ struct App {
         print("\nCompleted (last 7 days) (\(completed.count)):")
         for r in completed {
             print("  [\(r.localId.prefix(8))…] \(r.title)")
+            print("    priority: \(formatReminderPriority(r.priority))")
         }
     }
 
@@ -138,6 +140,19 @@ struct App {
         for t in tasks {
             print("  [\(t.uuid.prefix(8))…] \(t.title)")
             if let s = t.status { print("    status: \(s)") }
+            print("    priority: \(t.priority?.rawValue ?? "(none)")")
+        }
+    }
+
+    /// Apple Reminders int → human label. Mirrors the bucketed reverse mapping
+    /// the engine uses, plus "none" for 0.
+    private static func formatReminderPriority(_ priority: Int) -> String {
+        switch priority {
+        case 0:     return "0 (none)"
+        case 1...4: return "\(priority) (High)"
+        case 5...8: return "\(priority) (Medium)"
+        case 9:     return "9 (Low)"
+        default:    return "\(priority) (out of range)"
         }
     }
 

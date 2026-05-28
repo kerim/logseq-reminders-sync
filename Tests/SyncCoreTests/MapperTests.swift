@@ -168,4 +168,49 @@ struct MapperTests {
         #expect(h.count == 64)
         #expect(h.allSatisfy { $0.isHexDigit })
     }
+
+    // MARK: - Priority mapping
+
+    @Test("Logseq priority → Apple int",
+          arguments: zip(
+            [LogseqPriority?.some(.urgent), .some(.high), .some(.medium), .some(.low), nil],
+            [1, 5, 9, 0, 0]
+          ))
+    func logseqPriorityToReminderInt(_ input: LogseqPriority?, _ expected: Int) {
+        #expect(Mapper.logseqPriorityToReminder(input) == expected)
+    }
+
+    @Test("Apple int → Logseq priority (bucketed)",
+          arguments: zip(
+            [0, 1, 2, 4, 5, 7, 8, 9, -1, 10],
+            [LogseqPriority?.none,
+             .some(.urgent), .some(.urgent), .some(.urgent),
+             .some(.high), .some(.high), .some(.high),
+             .some(.medium),
+             nil, nil]
+          ))
+    func reminderPriorityToLogseqBucket(_ input: Int, _ expected: LogseqPriority?) {
+        #expect(Mapper.reminderPriorityToLogseq(input) == expected)
+    }
+
+    @Test func priorityRoundTripPreservesNonLowValues() {
+        for prio: LogseqPriority in [.urgent, .high, .medium] {
+            let apple = Mapper.logseqPriorityToReminder(prio)
+            #expect(Mapper.reminderPriorityToLogseq(apple) == prio)
+        }
+    }
+
+    @Test func priorityRoundTripLowCollapsesToNil() {
+        // Logseq "Low" intentionally round-trips to nil (no priority).
+        let apple = Mapper.logseqPriorityToReminder(.low)
+        #expect(apple == 0)
+        #expect(Mapper.reminderPriorityToLogseq(apple) == nil)
+    }
+
+    @Test func forSyncDropsLow() {
+        #expect(LogseqPriority.low.forSync == nil)
+        #expect(LogseqPriority.urgent.forSync == .urgent)
+        #expect(LogseqPriority.high.forSync == .high)
+        #expect(LogseqPriority.medium.forSync == .medium)
+    }
 }

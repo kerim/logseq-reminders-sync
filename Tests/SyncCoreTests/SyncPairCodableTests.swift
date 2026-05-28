@@ -92,4 +92,51 @@ struct SyncPairCodableTests {
         #expect(state.pairs.count == 1)
         #expect(state.pairs[0].pendingRotation == false)
     }
+
+    // MARK: - Priority
+
+    @Test("Legacy pair without lastPriority decodes as nil")
+    func legacyDecodesNilPriority() throws {
+        let pair = try JSONDecoder().decode(SyncPair.self, from: legacyJSON)
+        #expect(pair.lastPriority == nil)
+    }
+
+    @Test("Pair with lastPriority round-trips")
+    func priorityRoundTrip() throws {
+        let original = SyncPair(
+            logseqUUID: "p-1", reminderLocalId: "loc", reminderExtId: "ext",
+            lastStatus: "Doing", lastOpenStatus: "Doing", lastCompleted: false,
+            lastLogseqUpdated: 0, lastReminderMod: nil,
+            lastTitle: "t", lastNotesHash: "h",
+            lastPriority: .urgent
+        )
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(SyncPair.self, from: data)
+        #expect(decoded.lastPriority == .urgent)
+    }
+
+    @Test("Unknown lastPriority rawValue tolerates instead of throwing")
+    func unknownPriorityRawValueDecodesAsNil() throws {
+        // Hypothetical future "Critical" written by a newer build. A strict
+        // decode (`try c.decodeIfPresent`) would throw `dataCorrupted` and tank
+        // the whole pair; we use `try?` to fall back to nil so state.json
+        // self-heals on the next sync.
+        let strangeJSON = """
+        {
+            "logseqUUID": "p-2",
+            "reminderLocalId": "loc",
+            "reminderExtId": "ext",
+            "lastStatus": "Doing",
+            "lastOpenStatus": "Doing",
+            "lastCompleted": false,
+            "lastLogseqUpdated": 0,
+            "lastTitle": "t",
+            "lastNotesHash": "h",
+            "lastPriority": "Critical"
+        }
+        """.data(using: .utf8)!
+        let pair = try JSONDecoder().decode(SyncPair.self, from: strangeJSON)
+        #expect(pair.lastPriority == nil)
+        #expect(pair.logseqUUID == "p-2")
+    }
 }

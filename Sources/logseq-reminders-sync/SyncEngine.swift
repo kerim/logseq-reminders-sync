@@ -147,6 +147,15 @@ struct SyncEngine {
             let (titleStr, notesStr) = try await buildTitleAndNotes(
                 blockTitle: block.title, childTitles: childTitles
             )
+            // Priority: treat Logseq as authoritative at rebuild (matches status pattern).
+            // When syncPriority is disabled, seed lastPriority=nil so a later toggle-on
+            // resolves through timestamps instead of silently letting Apple win.
+            let logseqPrio = block.priority?.forSync
+            let targetApplePrio = Mapper.logseqPriorityToReminder(logseqPrio)
+            if config.syncPriority && targetApplePrio != snap.priority {
+                logger.log("  → setting reminder priority \(targetApplePrio) to match Logseq")
+                try? await reminders.setPriority(localId: snap.localId, targetApplePrio)
+            }
             let pair = SyncPair(
                 logseqUUID: blockUUID,
                 reminderLocalId: snap.localId,
@@ -157,7 +166,8 @@ struct SyncEngine {
                 lastLogseqUpdated: block.updatedAt,
                 lastReminderMod: snap.lastModified.map { ms($0) },
                 lastTitle: titleStr,
-                lastNotesHash: Mapper.hashNotes(notesStr)
+                lastNotesHash: Mapper.hashNotes(notesStr),
+                lastPriority: config.syncPriority ? logseqPrio : nil
             )
             state.pairs.append(pair)
             // Force-sync reminder to Logseq state (authoritative)
@@ -373,6 +383,11 @@ struct SyncEngine {
                 updated = try await mergeDates(updated: updated, block: block, live: live)
             }
 
+            // ── Priority 3-way merge (independent of status/date merges) ────
+            if config.syncPriority {
+                updated = try await mergePriority(updated: updated, block: block, live: live)
+            }
+
             state.pairs[i] = updated
         }
 
@@ -393,8 +408,15 @@ struct SyncEngine {
             let dueComponents: DateComponents? = config.syncDates ? dueDateMs.map {
                 Mapper.epochMsToDueComponents($0)
             } : nil
+            // Priority: gated entirely on syncPriority so the toggle fully suppresses
+            // priority traffic — both the EventKit write and the seeded baseline.
+            let logseqPrio = mirrorBlock.priority?.forSync
+            let initialPriority = config.syncPriority
+                ? Mapper.logseqPriorityToReminder(logseqPrio)
+                : 0
             let snap = try await reminders.createReminder(
-                title: title, notes: notes, dueComponents: dueComponents)
+                title: title, notes: notes, dueComponents: dueComponents,
+                priority: initialPriority)
             try await logseq.setReminderIdProperty(blockUUID: mirrorBlock.uuid, extId: snap.extId)
             let status = mirrorBlock.status ?? "Doing"
             let pair = SyncPair(
@@ -409,7 +431,8 @@ struct SyncEngine {
                 lastTitle: title,
                 lastNotesHash: hash,
                 lastDueDateMs: config.syncDates ? dueDateMs : nil,
-                lastDueSource: config.syncDates ? dueSource : nil
+                lastDueSource: config.syncDates ? dueSource : nil,
+                lastPriority: config.syncPriority ? logseqPrio : nil
             )
             state.pairs.append(pair)
         }
@@ -432,10 +455,17 @@ struct SyncEngine {
                 journalPage: journalPage,
                 inboxTitle: config.journalInboxTitle
             )
+            // Carry priority from the reminder to the new capture (Apple → Logseq).
+            // The reverse mapper never produces .low, so the captured priority is
+            // always a meaningful value when set.
+            let capturedPriority: LogseqPriority? = config.syncPriority
+                ? Mapper.reminderPriorityToLogseq(snap.priority)
+                : nil
             let taskUUID = try await logseq.createCaptureTask(
                 inboxBlockUUID: inboxUUID,
                 title: snap.title,
-                capturedExtId: snap.extId
+                capturedExtId: snap.extId,
+                priority: capturedPriority
             )
             // Carry the reminder's due date to Logseq as :scheduled (date-only
             // direction; we use the captured extId anchor, not a SyncPair).
@@ -592,6 +622,88 @@ struct SyncEngine {
                 }
                 updated.lastDueDateMs = reminderDueMs
                 if reminderDueMs == nil { updated.lastDueSource = nil }
+            }
+        }
+
+        return updated
+    }
+
+    // MARK: - Priority 3-way merge
+
+    /// Bidirectional priority merge. Reads through `updated.lastPriority` so the
+    /// status/date merges that ran before this one see their writes.
+    ///
+    /// Compares in Logseq enum space (Apple int → bucketed via
+    /// `reminderPriorityToLogseq`) so Apple's intra-bucket drift (e.g. 5 → 7)
+    /// doesn't fire spurious change signals. Ties fold into Logseq-wins, matching
+    /// the date merge — convergence-critical because we only have one state field.
+    private mutating func mergePriority(
+        updated: SyncPair,
+        block: LogseqBlock,
+        live: ReminderSnapshot
+    ) async throws -> SyncPair {
+        var updated = updated
+        let logseqEffective = block.priority?.forSync
+        let appleBucketed   = Mapper.reminderPriorityToLogseq(live.priority)
+
+        // Scope: nothing to do if both sides + history are at "no priority".
+        if logseqEffective == nil && appleBucketed == nil && updated.lastPriority == nil {
+            return updated
+        }
+
+        let logseqChanged = logseqEffective != updated.lastPriority
+        let appleChanged  = appleBucketed   != updated.lastPriority
+
+        switch (logseqChanged, appleChanged) {
+        case (false, false):
+            break  // no-op
+
+        case (true, false):
+            // Logseq changed → push to Apple. Guard against no-op writes that
+            // would bump lastModifiedDate and feed spurious change signals into
+            // the status/date merges.
+            let target = Mapper.logseqPriorityToReminder(logseqEffective)
+            logger.log("Priority Logseq→Reminders for \(updated.logseqUUID.prefix(8))… target=\(target)")
+            if target != live.priority {
+                try await reminders.setPriority(localId: updated.reminderLocalId, target)
+            }
+            updated.lastPriority = logseqEffective
+
+        case (false, true):
+            // Apple changed → push to Logseq.
+            logger.log("Priority Reminders→Logseq for \(updated.logseqUUID.prefix(8))… bucket=\(appleBucketed?.rawValue ?? "none")")
+            if let newPrio = appleBucketed {
+                try await logseq.setBlockPriority(blockUUID: updated.logseqUUID, priority: newPrio)
+            } else {
+                try await logseq.clearBlockPriority(blockUUID: updated.logseqUUID)
+            }
+            updated.lastPriority = appleBucketed
+
+        case (true, true):
+            // Both changed — most-recent-wins. Tie folds into Logseq (>=),
+            // matching the date merge so the single state field stays convergent.
+            let logseqMs   = block.updatedAt
+            let reminderMs = live.lastModified.map { ms($0) } ?? 0
+            if logseqMs == reminderMs {
+                logger.log("Priority CONFLICT TIE \(updated.logseqUUID.prefix(8))…: Logseq wins")
+            } else if logseqMs > reminderMs {
+                logger.log("Priority CONFLICT \(updated.logseqUUID.prefix(8))…: Logseq wins")
+            } else {
+                logger.log("Priority CONFLICT \(updated.logseqUUID.prefix(8))…: Reminder wins")
+            }
+            if logseqMs >= reminderMs {
+                let target = Mapper.logseqPriorityToReminder(logseqEffective)
+                if target != live.priority {
+                    try await reminders.setPriority(localId: updated.reminderLocalId, target)
+                }
+                updated.lastPriority = logseqEffective
+            } else {
+                if let newPrio = appleBucketed {
+                    try await logseq.setBlockPriority(blockUUID: updated.logseqUUID, priority: newPrio)
+                } else {
+                    try await logseq.clearBlockPriority(blockUUID: updated.logseqUUID)
+                }
+                updated.lastPriority = appleBucketed
             }
         }
 

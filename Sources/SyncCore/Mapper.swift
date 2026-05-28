@@ -172,4 +172,36 @@ public enum Mapper {
         return nil
     }
 
+    // MARK: - Priority mapping
+    //
+    // Logseq has 4 priority levels (Urgent/High/Medium/Low); Apple Reminders
+    // has 3 effective levels via RFC 5545 ints (1=High, 5=Medium, 9=Low) plus 0
+    // for "no priority". The mapping shifts one step down: Urgent→High,
+    // High→Medium, Medium→Low. Logseq "Low" is treated as "no priority"
+    // (normalized via LogseqPriority.forSync) — Low never appears on the
+    // reverse path.
+
+    public static func logseqPriorityToReminder(_ priority: LogseqPriority?) -> Int {
+        guard let p = priority?.forSync else { return 0 }
+        switch p {
+        case .urgent: return 1
+        case .high:   return 5
+        case .medium: return 9
+        case .low:    return 0  // unreachable after forSync
+        }
+    }
+
+    /// Bucketed reverse mapping — Apple's int range collapses to the three
+    /// non-Low Logseq levels (matching what Apple's UI displays). Intermediate
+    /// values from third-party editors (e.g. priority 7) snap to the bucket
+    /// they belong in (5–8 → .high).
+    public static func reminderPriorityToLogseq(_ priority: Int) -> LogseqPriority? {
+        switch priority {
+        case 1...4: return .urgent
+        case 5...8: return .high
+        case 9:     return .medium
+        default:    return nil    // 0 or out-of-range
+        }
+    }
+
 }

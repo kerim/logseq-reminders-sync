@@ -61,4 +61,41 @@ struct ConfigTests {
         let config = try JSONDecoder().decode(Config.self, from: json)
         #expect(config.syncDates == false)
     }
+
+    @Test("Config defaults syncPriority to true when key absent")
+    func defaultsSyncPriorityToTrue() throws {
+        let json = """
+        {
+            "graph": "my-graph",
+            "remindersListId": "",
+            "remindersListTitle": "Tasks",
+            "journalInboxTitle": "📥 Inbox",
+            "fallbackInboxPage": "Inbox",
+            "conflictPolicy": "mostRecentWins",
+            "filterQueryFile": ""
+        }
+        """.data(using: .utf8)!
+
+        let config = try JSONDecoder().decode(Config.self, from: json)
+        #expect(config.syncPriority == true)
+    }
+
+    @Test("Config decodes explicit syncPriority=false")
+    func decodesExplicitSyncPriority() throws {
+        let json = """
+        {
+            "graph": "my-graph",
+            "remindersListId": "",
+            "remindersListTitle": "Tasks",
+            "journalInboxTitle": "📥 Inbox",
+            "fallbackInboxPage": "Inbox",
+            "conflictPolicy": "mostRecentWins",
+            "filterQueryFile": "",
+            "syncPriority": false
+        }
+        """.data(using: .utf8)!
+
+        let config = try JSONDecoder().decode(Config.self, from: json)
+        #expect(config.syncPriority == false)
+    }
 }
