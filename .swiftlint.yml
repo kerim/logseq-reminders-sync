@@ -1,0 +1,48 @@
+# SwiftLint configuration for logseq-reminders-sync
+#
+# Tuned to the project's deliberate style so a reported violation means
+# something. Disabled rules below are house style, not defects:
+#   - short idiomatic identifiers (i, c, t, b, snap, ms)
+#   - column-aligned assignments / call arguments (padding after commas)
+#   - explicit enum raw values that pin the state.json wire format
+# The 3-way merge in SyncEngine.run() is intentionally one long linear
+# "source of truth" routine (see CLAUDE.md), so size thresholds are relaxed
+# rather than forcing a split that would obscure the flow.
+
+included:
+  - Sources
+  - Tests
+
+excluded:
+  - .build
+
+disabled_rules:
+  - identifier_name             # idiomatic short names are deliberate here
+  - comma                       # column alignment uses padding spaces after commas
+  - redundant_string_enum_value # explicit raw values pin the Codable/state.json wire format
+
+# SyncEngine.run() is the documented single source of truth — keep it whole.
+# Length/complexity stay as warnings (visible if it ever grows) but never
+# hard-error, so a plain `swiftlint` run exits clean on the current tree.
+function_body_length:
+  warning: 520
+  error: 900
+type_body_length:
+  warning: 600
+  error: 1000
+file_length:
+  warning: 800
+  error: 1200
+cyclomatic_complexity:
+  warning: 45
+  error: 120
+
+line_length:
+  warning: 140
+  error: 200
+  ignores_comments: true
+  ignores_urls: true
+
+large_tuple:
+  warning: 4
+  error: 6
