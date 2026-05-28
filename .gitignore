@@ -12,5 +12,6 @@ DerivedData/
 # macOS
 .DS_Store
 
-# Claude Code local settings
-.claude/settings.local.json
+# Claude Code tooling — local-only, not tracked (still active on disk)
+.claude/
+scripts/hooks/
