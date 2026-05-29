@@ -270,6 +270,20 @@ public enum Mapper {
 
     // MARK: - Date 3-way merge (pure — no EventKit, unit-testable)
 
+    /// A due date paired with the Logseq field it occupies (`scheduled`/`deadline`).
+    /// These two always travel together — a value and the label that says which Logseq
+    /// field it lives in — so they're modeled as one input, not two. `ms == nil` means
+    /// "no date" (and `source` is then nil). Reminders have no field dimension, so the
+    /// reminder side of a merge is a bare `Int64?`, not a `SourcedDate`.
+    public struct SourcedDate: Equatable {
+        public let ms: Int64?
+        public let source: LogseqDateField?
+        public init(ms: Int64?, source: LogseqDateField?) {
+            self.ms = ms
+            self.source = source
+        }
+    }
+
     public enum DateMergeAction: Equatable {
         /// Both sides already agree with the baseline; no write, no baseline change.
         case noChange
@@ -285,36 +299,32 @@ public enum Mapper {
     /// Decide the action for the date axis. Pure: the SyncEngine executor performs the
     /// writes and applies the returned baseline. Mirrors `statusMergeAction`.
     ///
-    /// At first-time baseline (`lastDueMs == nil`) the empty side is SEEDED rather than
+    /// At first-time baseline (`baseline.ms == nil`) the empty side is SEEDED rather than
     /// left blank. Otherwise the next pass mistakes an empty side for a deliberate
     /// "date cleared" edit and wipes the populated side (the reported data-loss bug, plus
     /// its mirror where only the reminder held a date). On genuine first-enable divergence
     /// Logseq wins — it is the user's source of truth.
     ///
     /// - Parameters:
-    ///   - logseqMs: Logseq's current date (deadline preferred over scheduled), nil if none.
+    ///   - logseq: Logseq's current date + field (deadline preferred over scheduled).
     ///   - reminderMs: the reminder's current due date in epoch ms, nil if none.
-    ///   - logseqField: which Logseq field holds the date (`preferredDateField`), nil if none.
-    ///   - lastDueMs: baseline date from the last sync (nil = not yet established).
-    ///   - lastDueSource: baseline field from the last sync.
+    ///   - baseline: date + field recorded at the last sync (`ms == nil` = not yet established).
     ///   - logseqUpdatedMs: Logseq block `updatedAt` — the conflict tie-break operand.
     ///   - reminderUpdatedMs: reminder pre-write `lastModified` ms — the conflict operand.
     public static func dateMergeAction(
-        logseqMs: Int64?,
+        logseq: SourcedDate,
         reminderMs: Int64?,
-        logseqField: LogseqDateField?,
-        lastDueMs: Int64?,
-        lastDueSource: LogseqDateField?,
+        baseline: SourcedDate,
         logseqUpdatedMs: Int64,
         reminderUpdatedMs: Int64?
     ) -> DateMergeAction {
         // First-time baseline establishment: seed the empty side so both converge.
-        if lastDueMs == nil {
-            if let l = logseqMs {
+        if baseline.ms == nil {
+            if let l = logseq.ms {
                 // Logseq is authoritative at first baseline (Logseq-wins on divergence).
                 return reminderMs == l
-                    ? .recordBaseline(ms: l, source: logseqField)
-                    : .pushToReminder(ms: l, source: logseqField)
+                    ? .recordBaseline(ms: l, source: logseq.source)
+                    : .pushToReminder(ms: l, source: logseq.source)
             } else if let r = reminderMs {
                 // Only the reminder has a date — seed Logseq (Step-7 adopt convention).
                 return .pushToLogseq(ms: r, source: .scheduled)
@@ -323,22 +333,22 @@ public enum Mapper {
             }
         }
 
-        let logseqChanged   = logseqMs   != lastDueMs
-        let reminderChanged = reminderMs != lastDueMs
+        let logseqChanged   = logseq.ms != baseline.ms
+        let reminderChanged = reminderMs != baseline.ms
 
         switch (logseqChanged, reminderChanged) {
         case (false, false):
             return .noChange
         case (true, false):
-            return .pushToReminder(ms: logseqMs, source: logseqField)
+            return .pushToReminder(ms: logseq.ms, source: logseq.source)
         case (false, true):
-            return .pushToLogseq(ms: reminderMs, source: lastDueSource ?? .scheduled)
+            return .pushToLogseq(ms: reminderMs, source: baseline.source ?? .scheduled)
         case (true, true):
             // Both changed — most-recent-wins; tie (>=) → Logseq wins.
             if logseqUpdatedMs >= (reminderUpdatedMs ?? 0) {
-                return .pushToReminder(ms: logseqMs, source: logseqField)
+                return .pushToReminder(ms: logseq.ms, source: logseq.source)
             } else {
-                return .pushToLogseq(ms: reminderMs, source: lastDueSource ?? .scheduled)
+                return .pushToLogseq(ms: reminderMs, source: baseline.source ?? .scheduled)
             }
         }
     }

@@ -620,11 +620,9 @@ struct SyncEngine {
         let reminderDueMs = live.dueComponents.flatMap { Mapper.dueComponentsToEpochMs($0) }
 
         let action = Mapper.dateMergeAction(
-            logseqMs: logseqDueMs,
+            logseq: Mapper.SourcedDate(ms: logseqDueMs, source: logseqField),
             reminderMs: reminderDueMs,
-            logseqField: logseqField,
-            lastDueMs: updated.lastDueDateMs,
-            lastDueSource: updated.lastDueSource,
+            baseline: Mapper.SourcedDate(ms: updated.lastDueDateMs, source: updated.lastDueSource),
             logseqUpdatedMs: block.updatedAt,
             reminderUpdatedMs: preWriteReminderMs)
 

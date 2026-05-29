@@ -3,8 +3,8 @@ import SyncCore
 
 @main
 struct App {
-    // BUILD 30 (date merge: seed empty side at baseline instead of wiping the populated side)
-    static let buildVersion = "30"
+    // BUILD 31 (dateMergeAction: bundle date+field into SourcedDate so it fits the 6-param lint limit)
+    static let buildVersion = "31"
     static let appVersion = "0.1.0"
 
     static func main() async throws {

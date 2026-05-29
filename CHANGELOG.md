@@ -1,5 +1,12 @@
 # Changelog
 
+## Build 31 — 2026-05-29
+
+### Changed
+- Internal: `Mapper.dateMergeAction` now bundles each date with its Logseq field (`scheduled`/`deadline`) into a small `SourcedDate` value, dropping it to within the existing 6-parameter lint limit. The previous build had raised that limit instead; that change is reverted. No behavior change.
+
+---
+
 ## Build 30 — 2026-05-29
 
 ### Fixed
