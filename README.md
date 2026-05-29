@@ -1,21 +1,48 @@
 # logseq-reminders-sync
 
-A macOS command-line tool that **bi-directionally syncs your prioritized [Logseq](https://logseq.com) DB-graph tasks with Apple Reminders.** Each prioritized task (Urgent / High / Medium) becomes a reminder, and its Logseq status maps to one of five Reminders lists. Edit on either side — title, status, due date, priority, completion — and the change flows back to the other.
+**A macOS command-line tool that syncs [Logseq](https://logseq.com) tasks with Apple Reminders.** 
 
-It runs one sync pass per invocation and exits (no daemon), so it's meant to be triggered on a schedule. `setup` installs that schedule for you.
+- It offers true two-way sync, but **only for metadata**: *completion*, *status markers*, *priority*, and *due dates*. 
 
-> Requires **macOS 14 (Sonoma) or later** and the **`logseq` CLI**.
+- The title and notes fields are only **synced in one direction**. Logseq remains the *sole source of truth*, and *markdown is stripped* on importing to Reminders. The only exception is when you **create new tasks** in Reminders. 
+- It runs on a schedule that you setup on install. You can also invoke a manual sync.
+
+> Requires **macOS 14 (Sonoma) or later** and the **`logseq` CLI** (v2, only available with the new DB version of Logseq)
 
 ---
 
-## How it works (in brief)
+### What syncs?
 
-- **Five lists, one per status.** Your open tasks live in lists named *Logseq Backlog / Todo / Doing / In Review*, and closed ones in *Logseq Canceled*. Moving a reminder between these lists changes the task's status in Logseq, and vice-versa.
-- **Two directions.**
-  - *Logseq → Reminders:* any task with priority Urgent/High/Medium and an open status gets a reminder in the matching list. Drop a task's priority to Low/none and its reminder is removed.
-  - *Reminders → Logseq:* a reminder you create directly in one of the five lists is "adopted" — a matching task is created under today's journal inbox.
-- **Conflicts resolve most-recent-wins.** Whichever side changed last takes precedence; ties favor Logseq.
-- **The link is stored in Logseq.** Each task carries a hidden `reminder-id` property tying it to its reminder, so the pairing survives even if the local state cache is deleted.
+Only tasks with a priority of **Urgent, High, or Medium** sync. A task with no priority (or `Low`) is ignored. Priority is effectively the on/off switch: give a task one of those three priorities and it appears in Reminders; lower it to `Low` or none, and its reminder is removed again.
+
+### Each status marker has its own list
+
+There are five Reminders lists, one for each Logseq status:
+
+| Logseq status | Reminders list |
+| --- | --- | 
+| Backlog | **Logseq Backlog** | 
+| Todo | **Logseq Todo** | 
+| Doing | **Logseq Doing** | 
+| In Review | **Logseq In Review** | 
+| Canceled | **Logseq Canceled** (Only for canceling previously synced tasks.) | 
+| Done | (Handled by Reminders completion status) | 
+
+A task's status *is* the list it lives in, so **moving a reminder to a different list changes the task's status in Logseq** — drag a reminder from *Logseq Todo* to *Logseq Doing* and the task becomes Doing. The reverse holds too: change the status in Logseq and the reminder moves to the matching list.
+
+There's no list for **Done**. Completing a reminder (checking it off) marks the task Done in Logseq; un-checking it restores whatever open status it had before.
+
+**Canceled** only exists to cancel tasks that were already synced. Existing cancelled tasks from logseq are ignored on sync. You can cancel a task by moving it to the **Canceled** list. 
+
+### When both sides changed
+
+If a task and its reminder were both edited since the last sync, the **most recent edit wins**. Exact ties favor Logseq.
+
+### The link is durable
+
+Each Logseq task stores a hidden `reminder-id` property pointing at its reminder. That link lives in your graph — not in a throwaway cache — so even if the tool's local state file is deleted, it re-discovers every pairing on the next run and never creates duplicates.
+
+You can set the `reminder-id` property to "hide by default" so you don't see it in your graph.
 
 ---
 
@@ -53,7 +80,9 @@ That's it — once setup finishes, prioritized tasks start appearing in Reminder
 
 ## Everyday use
 
-If you installed the background agent, you don't need to do anything — it syncs on its schedule. To run a sync by hand:
+If you installed the background agent, **you don't need to do anything** — it syncs on its schedule. 
+
+To run a sync by hand:
 
 ```fish
 logseq-reminders-sync --once      # one sync pass (this is also the default with no args)
