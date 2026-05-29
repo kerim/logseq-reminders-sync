@@ -92,10 +92,11 @@ enum Setup {
                 print("Cancelled — no changes made.")
                 return   // defer restores the agent
             }
+            let inboxTitle = promptInboxDestination(current: existing.journalInboxTitle)
             newConfig = Config(
                 graph: graph,
                 statusLists: statusLists,
-                journalInboxTitle: existing.journalInboxTitle,
+                journalInboxTitle: inboxTitle,
                 fallbackInboxPage: existing.fallbackInboxPage,
                 conflictPolicy: existing.conflictPolicy,
                 syncDates: existing.syncDates,
@@ -104,7 +105,10 @@ enum Setup {
                 logseqCliPath: cliPath
             )
         } else {
-            newConfig = Config.makeDefault(graph: graph, statusLists: statusLists, logseqCliPath: cliPath)
+            let inboxTitle = promptInboxDestination(current: nil)
+            newConfig = Config.makeDefault(
+                graph: graph, statusLists: statusLists, logseqCliPath: cliPath,
+                journalInboxTitle: inboxTitle)
         }
         try newConfig.save()
         print("  ✓ Wrote \(Config.configDir.appendingPathComponent("config.json").path)\n")
@@ -253,6 +257,23 @@ enum Setup {
             throw CliError.logseqNotFound
         }
         return entered
+    }
+
+    // MARK: - Inbox destination
+
+    /// Prompt the user for where newly-adopted tasks should land on the journal page.
+    /// `current` is the existing setting (nil = top-level) used to pre-fill on re-runs.
+    /// Returns nil for top-level placement or a non-empty title for a named sub-block.
+    private static func promptInboxDestination(current: String?) -> String? {
+        let useNamed = Prompt.confirm(
+            "Place newly-adopted tasks under a named sub-block on the journal page?" +
+            " (No = add them at the top level of the day's journal)",
+            defaultYes: current != nil)
+        guard useNamed else { return nil }
+        let def = current ?? "Inbox"
+        let entered = Prompt.line("  Sub-block title [\(def)]: ")?
+            .trimmingCharacters(in: .whitespaces) ?? ""
+        return entered.isEmpty ? def : entered
     }
 }
 

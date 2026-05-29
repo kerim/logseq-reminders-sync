@@ -192,4 +192,98 @@ struct ConfigTests {
         #expect(switched.syncPriority == original.syncPriority)
         #expect(switched.gateForceFullRunMinutes == original.gateForceFullRunMinutes)
     }
+
+    // MARK: - journalInboxTitle optional tests
+
+    @Test("journalInboxTitle present non-empty decodes and re-encodes")
+    func journalInboxTitlePresentRoundTrips() throws {
+        let json = """
+        {
+            "graph": "g",
+            \(statusListsJSON),
+            "journalInboxTitle": "Inbox",
+            "fallbackInboxPage": "Inbox",
+            "conflictPolicy": "mostRecentWins"
+        }
+        """
+        let config = try JSONDecoder().decode(Config.self, from: Data(json.utf8))
+        #expect(config.journalInboxTitle == "Inbox")
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(Config.self, from: data)
+        #expect(decoded.journalInboxTitle == "Inbox")
+    }
+
+    @Test("journalInboxTitle absent decodes to nil and re-encode omits the key")
+    func journalInboxTitleAbsentIsNil() throws {
+        let json = """
+        {
+            "graph": "g",
+            \(statusListsJSON),
+            "fallbackInboxPage": "Inbox",
+            "conflictPolicy": "mostRecentWins"
+        }
+        """
+        let config = try JSONDecoder().decode(Config.self, from: Data(json.utf8))
+        #expect(config.journalInboxTitle == nil)
+        let data = try JSONEncoder().encode(config)
+        let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        #expect(dict?["journalInboxTitle"] == nil)
+    }
+
+    @Test("journalInboxTitle empty string normalises to nil")
+    func journalInboxTitleEmptyNormalisesToNil() throws {
+        let json = """
+        {
+            "graph": "g",
+            \(statusListsJSON),
+            "journalInboxTitle": "",
+            "fallbackInboxPage": "Inbox",
+            "conflictPolicy": "mostRecentWins"
+        }
+        """
+        let config = try JSONDecoder().decode(Config.self, from: Data(json.utf8))
+        #expect(config.journalInboxTitle == nil)
+    }
+
+    @Test("makeDefault with no journalInboxTitle gives nil (top-level default)")
+    func makeDefaultInboxTitleIsNil() {
+        let config = Config.makeDefault(
+            graph: "g",
+            statusLists: ["Doing": .init(id: "id-doing", title: "Logseq Doing")],
+            logseqCliPath: nil
+        )
+        #expect(config.journalInboxTitle == nil)
+    }
+
+    @Test("makeDefault with journalInboxTitle round-trips")
+    func makeDefaultInboxTitleRoundTrips() throws {
+        let original = Config.makeDefault(
+            graph: "g",
+            statusLists: ["Doing": .init(id: "id-doing", title: "Logseq Doing")],
+            logseqCliPath: nil,
+            journalInboxTitle: "Inbox"
+        )
+        #expect(original.journalInboxTitle == "Inbox")
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(Config.self, from: data)
+        #expect(decoded.journalInboxTitle == "Inbox")
+    }
+
+    @Test("with(graph:) preserves nil and non-nil journalInboxTitle")
+    func withGraphPreservesInboxTitle() {
+        let nilConfig = Config.makeDefault(
+            graph: "old",
+            statusLists: ["Doing": .init(id: "id-doing", title: "Logseq Doing")],
+            logseqCliPath: nil
+        )
+        #expect(nilConfig.with(graph: "new").journalInboxTitle == nil)
+
+        let namedConfig = Config.makeDefault(
+            graph: "old",
+            statusLists: ["Doing": .init(id: "id-doing", title: "Logseq Doing")],
+            logseqCliPath: nil,
+            journalInboxTitle: "Inbox"
+        )
+        #expect(namedConfig.with(graph: "new").journalInboxTitle == "Inbox")
+    }
 }

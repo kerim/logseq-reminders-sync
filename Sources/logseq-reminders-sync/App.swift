@@ -3,8 +3,8 @@ import SyncCore
 
 @main
 struct App {
-    // BUILD 27 (simplify cleanup: extract LaunchdAgent.guiDomain helper)
-    static let buildVersion = "27"
+    // BUILD 28 (configurable adopt destination: top-level journal vs named sub-block)
+    static let buildVersion = "28"
     static let appVersion = "0.1.0"
 
     static func main() async throws {

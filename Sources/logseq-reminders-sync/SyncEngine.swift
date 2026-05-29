@@ -490,8 +490,14 @@ struct SyncEngine {
 
             logger.log("Adopting new reminder as mirror: \(snap.title.prefix(60))")
             let journalPage = LogseqClient.journalPageName()
-            let inboxUUID = try await logseq.findOrCreateInboxBlock(
-                journalPage: journalPage, inboxTitle: config.journalInboxTitle)
+            let captureTarget: CaptureTarget
+            if let inboxTitle = config.journalInboxTitle {
+                let inboxUUID = try await logseq.findOrCreateInboxBlock(
+                    journalPage: journalPage, inboxTitle: inboxTitle)
+                captureTarget = .inboxBlock(uuid: inboxUUID)
+            } else {
+                captureTarget = .journalPage(name: journalPage)
+            }
 
             // Priority: carry from reminder; if none, default to Medium (Option 1).
             let capturedPriority: LogseqPriority?
@@ -504,7 +510,7 @@ struct SyncEngine {
             // Write reminder-id ATOMICALLY in the block creation upsert (not a separate call).
             // Status matches the list the reminder was created in.
             let taskUUID = try await logseq.createCaptureTask(
-                inboxBlockUUID: inboxUUID,
+                target: captureTarget,
                 title: snap.title,
                 reminderExtId: snap.extId,
                 status: statusForList,

@@ -11,7 +11,11 @@ public struct Config: Codable {
     /// Map from canonical Logseq status ("Doing", "Todo", etc.) to the corresponding
     /// Reminders list. "Done" has no entry — completion is tracked by isCompleted.
     public let statusLists: [String: ListEntry]
-    public let journalInboxTitle: String
+    /// Where newly-adopted tasks (Reminders → Logseq) land on today's journal page.
+    /// `nil` = top level of the journal page; a non-empty title = a named sub-block
+    /// (e.g. "Inbox") that adopted tasks are nested under. An empty string decodes
+    /// to `nil`. Chosen interactively in `setup`.
+    public let journalInboxTitle: String?
     public let fallbackInboxPage: String
     public let conflictPolicy: String
     /// Whether to sync due dates in both directions. Replaces `syncDeadlines`.
@@ -32,7 +36,7 @@ public struct Config: Codable {
     public init(
         graph: String,
         statusLists: [String: ListEntry],
-        journalInboxTitle: String,
+        journalInboxTitle: String?,
         fallbackInboxPage: String,
         conflictPolicy: String,
         syncDates: Bool,
@@ -76,12 +80,13 @@ public struct Config: Codable {
     public static func makeDefault(
         graph: String,
         statusLists: [String: ListEntry],
-        logseqCliPath: String?
+        logseqCliPath: String?,
+        journalInboxTitle: String? = nil
     ) -> Config {
         Config(
             graph: graph,
             statusLists: statusLists,
-            journalInboxTitle: "Inbox",
+            journalInboxTitle: journalInboxTitle,
             fallbackInboxPage: "Inbox",
             conflictPolicy: "mostRecentWins",
             syncDates: false,
@@ -152,7 +157,8 @@ public struct Config: Codable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         graph             = try c.decode(String.self, forKey: .graph)
         statusLists       = try c.decode([String: ListEntry].self, forKey: .statusLists)
-        journalInboxTitle = try c.decode(String.self, forKey: .journalInboxTitle)
+        let rawInbox = try c.decodeIfPresent(String.self, forKey: .journalInboxTitle)
+        journalInboxTitle = (rawInbox?.isEmpty == true) ? nil : rawInbox
         fallbackInboxPage = try c.decode(String.self, forKey: .fallbackInboxPage)
         conflictPolicy    = try c.decode(String.self, forKey: .conflictPolicy)
         // Accept both "syncDates" (new) and "syncDeadlines" (legacy key)
@@ -171,7 +177,7 @@ public struct Config: Codable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(graph,             forKey: .graph)
         try c.encode(statusLists,       forKey: .statusLists)
-        try c.encode(journalInboxTitle, forKey: .journalInboxTitle)
+        try c.encodeIfPresent(journalInboxTitle, forKey: .journalInboxTitle)
         try c.encode(fallbackInboxPage, forKey: .fallbackInboxPage)
         try c.encode(conflictPolicy,    forKey: .conflictPolicy)
         try c.encode(syncDates,         forKey: .syncDates)

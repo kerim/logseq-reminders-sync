@@ -9,6 +9,14 @@ struct PropertyIdents {
     let repeated: String
 }
 
+/// Where an adopted capture task is placed on the journal page.
+enum CaptureTarget {
+    /// Nested under a named sub-block (e.g. "Inbox"). Created if absent.
+    case inboxBlock(uuid: String)
+    /// Directly on the journal page (top-level block).
+    case journalPage(name: String)
+}
+
 struct LogseqClient {
     let cliPath: String
     let graph: String
@@ -450,10 +458,14 @@ struct LogseqClient {
 
     /// Find existing Inbox block or create it on the journal page. Returns the block UUID.
     func findOrCreateInboxBlock(journalPage: String, inboxTitle: String) async throws -> String {
+        // Escape for Datascript EDN string literal (backslash first, then quote).
+        let safeTitle = inboxTitle
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
         let existResult = try await query("""
             [:find ?uuid
              :where [?p :block/title "\(journalPage)"] [?p :block/journal-day _]
-                    [?child :block/parent ?p] [?child :block/title "\(inboxTitle)"]
+                    [?child :block/parent ?p] [?child :block/title "\(safeTitle)"]
                     [?child :block/uuid ?uuid]]
             """)
         if let rows = existResult as? [[Any]], let row = rows.first,
@@ -469,7 +481,7 @@ struct LogseqClient {
         return try await extractCreatedUUID(from: createResult, context: "inbox block")
     }
 
-    /// Create a mirror-capture task under the inbox block.
+    /// Create a mirror-capture task at the given target on the journal page.
     ///
     /// Writes `reminder-id` (NOT `captured-reminder-id`) atomically in the same upsert
     /// that creates the block, so a crash between this and the promote cannot leave
@@ -482,17 +494,21 @@ struct LogseqClient {
     ///
     /// Returns the new block UUID.
     func createCaptureTask(
-        inboxBlockUUID: String,
+        target: CaptureTarget,
         title: String,
         reminderExtId: String,
         status: String,
         priority: LogseqPriority? = nil
     ) async throws -> String {
         guard let idents = propertyIdents else { throw LogseqError.notBootstrapped }
+        let targetArgs: [String]
+        switch target {
+        case .inboxBlock(let uuid):  targetArgs = ["--target-uuid", uuid]
+        case .journalPage(let name): targetArgs = ["--target-page", name]
+        }
         // Atomic: block content + reminder-id in one upsert.
-        let createResult = try await run([
-            "upsert", "block", "-g", graph,
-            "--target-uuid", inboxBlockUUID,
+        let createResult = try await run(
+            ["upsert", "block", "-g", graph] + targetArgs + [
             "--content", title,
             "--update-properties", "{:\(idents.reminderId) \"\(reminderExtId)\"}",
             "--output", "json"
