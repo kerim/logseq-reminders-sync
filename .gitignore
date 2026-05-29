@@ -15,3 +15,4 @@ DerivedData/
 # Claude Code tooling — local-only, not tracked (still active on disk)
 .claude/
 scripts/hooks/
+CLAUDE.md

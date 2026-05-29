@@ -129,4 +129,4 @@ bash scripts/sign.sh        # sign + install the debug binary
 bash scripts/sign.sh release
 ```
 
-See `CLAUDE.md` for the architecture and internals.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the architecture and internals.
