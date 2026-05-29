@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A macOS 14+ command-line tool that bi-directionally syncs Logseq DB-graph tasks (priority `Urgent`/`High`/`Medium`, any status) with five Apple Reminders lists — one per Logseq status. Each invocation runs one sync pass and exits — no daemon. Designed to be triggered on a schedule (cron / launchd).
+A macOS 14+ command-line tool that bi-directionally syncs Logseq DB-graph tasks (priority `Urgent`/`High`/`Medium`, any status) with five Apple Reminders lists — one per Logseq status. Each invocation runs one sync pass and exits — no daemon. Designed to be triggered on a schedule (launchd / cron).
+
+First-time users run `logseq-reminders-sync setup` (interactive onboarding: Reminders access → graph picker → auto-created lists → config → optional launchd agent); `switch-graph` re-points the tool at a different graph with a full clean. `README.md` is the end-user story; this file is the developer's.
 
 ## When to ask the user to test
 
@@ -41,13 +43,13 @@ Three SPM targets:
 
 - **SyncCore** (library, `Sources/SyncCore/`) — pure data + transforms: `Config`, `SyncState`/`SyncPair`/`CaptureRecord`, `ReminderSnapshot`, `LogseqBlock`, `Mapper`, `StateStore`. No EventKit, no Process, no I/O beyond the state JSON file. This is what `Tests/SyncCoreTests/` exercises with Swift Testing.
 - **ReminderKitBridge** (Objective-C library, `Sources/ReminderKitBridge/`) — reaches Apple's private `ReminderKit` framework via runtime introspection to write/read the `REMURLAttachment` that Reminders.app displays in its URL field. The public `EKCalendarItem.url` is disconnected from that field (confirmed macOS 26). See the private-symbol inventory and repair guide at the top of `ReminderKitBridge.m`.
-- **logseq-reminders-sync** (executable, `Sources/logseq-reminders-sync/`) — everything that talks to the outside world: `App` (entry), `SyncEngine` (the 3-way merge), `LogseqClient` (shells out to the `logseq` CLI), `RemindersStore` (actor over `EKEventStore`), `Lockfile`, `RunLogger`. The Info.plist is embedded via `-sectcreate` linker flags so the CLI binary carries `NSRemindersFullAccessUsageDescription`.
+- **logseq-reminders-sync** (executable, `Sources/logseq-reminders-sync/`) — everything that talks to the outside world: `App` (entry + CLI-path resolution), `SyncEngine` (the 3-way merge), `LogseqClient` (shells out to the `logseq` CLI), `RemindersStore` (actor over `EKEventStore`), `Setup` (the interactive `setup` / `switch-graph` flows + `Prompt` helpers), `LaunchdAgent` (the background-sync LaunchAgent), `Lockfile`, `RunLogger`. The Info.plist is embedded via `-sectcreate` linker flags so the CLI binary carries `NSRemindersFullAccessUsageDescription`.
 
 ## How the sync model works (the part that requires reading multiple files)
 
 Read `SyncEngine.run()` top-to-bottom — it's the source of truth. The shape:
 
-1. **Logseq is queried via the bundled `logseq` CLI** at `/Users/niyaro/.local/bin/logseq` (hardcoded in `App.cliPath`). All queries are Datascript EDN passed to `logseq query`; writes use `logseq upsert block/task/property`. `LogseqClient.bootstrap()` upserts the two custom properties (`reminder-id`, `captured-reminder-id`) and resolves their `:db/ident` keywords — every subsequent property read/write uses those resolved idents.
+1. **Logseq is queried via the `logseq` CLI**, whose path is resolved at runtime by `App.resolveCliPath(config:)` — config-first (`config.logseqCliPath`), then `which logseq`, then common install locations (`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`). `setup` writes the resolved **absolute** path into `config.logseqCliPath` so the PATH-stripped launchd run still finds it; every `LogseqClient` call site routes through the resolver. All queries are Datascript EDN passed to `logseq query`; writes use `logseq upsert block/task/property`. `LogseqClient.bootstrap()` upserts the two custom properties (`reminder-id`, `captured-reminder-id`) and resolves their `:db/ident` keywords — every subsequent property read/write uses those resolved idents.
 
 2. **The idempotency anchors live in Logseq, not in state.json.** Each mirrored Logseq block carries `reminder-id` = the reminder's `calendarItemExternalIdentifier` (extId). Each captured journal block carries `captured-reminder-id` = the source reminder's extId. The state file is a performance cache and is rebuildable from those properties — see Steps 3(c) "Reindex guard" and 4.5 "Rebuild pairs" in `SyncEngine.run()`.
 
@@ -65,10 +67,18 @@ Read `SyncEngine.run()` top-to-bottom — it's the source of truth. The shape:
 
 The binary reads and writes only under `~/.logseq-reminders-sync/`:
 
-- `config.json` — `graph`, `statusLists` (map from status name to `{id, title}` for each of the 5 managed lists), `journalInboxTitle`, `fallbackInboxPage`, `conflictPolicy`, `syncDates` (opt-in, default `false`; reads legacy `syncDeadlines` if present), `syncPriority` (opt-out, default `true`). Decoded by `Config.load()`. Legacy keys `remindersListId`/`remindersListTitle`/`filterQueryFile` are silently accepted but ignored — migrate to `statusLists`.
+- `config.json` — `graph`, `statusLists` (map from canonical status name to `{id, title}` for each of the 5 managed lists), `journalInboxTitle`, `fallbackInboxPage`, `conflictPolicy`, `syncDates` (opt-in, default `false`; reads legacy `syncDeadlines` if present), `syncPriority` (opt-out, default `true`), `gateForceFullRunMinutes` (default `60`), `logseqCliPath` (optional absolute path; written by `setup`). Decoded by `Config.load()`, written by `Config.save()`. **`Config` has hand-written `Codable`** (explicit `CodingKeys` + `init(from:)` + `encode(to:)`) — new fields must be wired into all three or they silently don't persist. Legacy keys `remindersListId`/`remindersListTitle`/`filterQueryFile` are silently accepted but ignored — migrate to `statusLists`.
 - `state.json` — `SyncState` (pairs + captures + lastRunDate). Pretty-printed, sorted keys, atomic writes.
-- `log/YYYY-MM-DD.log` — daily run log, also tee'd to stdout via `RunLogger`.
+- `log/YYYY-MM-DD.log` — daily run log, also tee'd to stdout via `RunLogger`. `setup`'s launchd agent additionally writes `log/launchd.out.log` / `log/launchd.err.log`.
 - `lock` — PID file; `Lockfile.acquire()` uses `kill(pid, 0)` to test liveness, so stale lockfiles from crashes are auto-recovered.
+- `~/Library/LaunchAgents/com.kerim.logseq-reminders-sync.plist` (outside the config dir) — the optional background-sync LaunchAgent, managed by `LaunchdAgent` (idempotent `bootout`-then-`bootstrap`).
+
+## Onboarding & graph switching (`Setup.swift`)
+
+Both are interactive (stdin via `Prompt`) and mutate live state, so both **acquire the lockfile** and coordinate with the launchd agent. Read `Setup.run()` / `Setup.switchGraph()` before changing either.
+
+- **`setup`** — runs *before* `Config.load()` in `App.main()` (it creates the config). Order: ensure `configDir` → acquire lock → `bootout` any existing agent (restored via `defer` unless a fresh one is installed) → authorize Reminders (the TCC prompt must fire here, interactively) → resolve CLI path → `listGraphs()` picker → `findOrCreateList(title:)` for the five canonical statuses → write config → optionally install the agent. It **refuses to change graphs** (redirects to `switch-graph`) — *unless* the old graph no longer exists in `listGraphs()`, in which case it allows a fresh setup. Re-runnable; same-graph re-run preserves the existing scalar toggles.
+- **`switch-graph`** — full clean, **validate-everything-before-destroying**: lock → bootout agent → capture old graph name → authorize (does **not** `resolveCalendars`, so it tolerates already-deleted lists) → pick/validate new graph → confirm (EOF / non-`y` aborts) → `emptyManagedLists` (incomplete + completed, unbounded; `commit:false` + one final `commit`, `store.reset()` on throw) → verify `countRemaining == 0` (else abort, config untouched) → bootstrap a `LogseqClient` bound to the **old** graph and `clearSyncProperties()` (best-effort per block via `--remove-properties`) → delete `state.json` (not swallowed) → write new graph to config **last** → re-bootstrap the agent **only on clean paths**; on a *post-destruction* failure it leaves the agent down with a recovery message (structured catch, never a bare `exit()` that would skip the restore).
 
 ## Diagnostic CLI flags
 
