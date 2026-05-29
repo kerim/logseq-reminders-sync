@@ -2,7 +2,7 @@
 
 **A macOS command-line tool that syncs [Logseq](https://logseq.com) tasks with Apple Reminders.** 
 
-- It offers true two-way sync, but **only for metadata**: *completion*, *status markers*, *priority*, and *due dates*. 
+- It offers true two-way sync, but **only for metadata**: *completion*, *status markers*, *priority*, and *due dates (opt-in)*. 
 
 - The title and notes fields are only **synced in one direction**. Logseq remains the *sole source of truth*, and *markdown is stripped* on importing to Reminders. The only exception is when you **create new tasks** in Reminders. 
 - It runs on a schedule that you setup on install. You can also invoke a manual sync.
@@ -33,6 +33,14 @@ A task's status *is* the list it lives in, so **moving a reminder to a different
 There's no list for **Done**. Completing a reminder (checking it off) marks the task Done in Logseq; un-checking it restores whatever open status it had before.
 
 **Canceled** only exists to cancel tasks that were already synced. Existing cancelled tasks from logseq are ignored on sync. You can cancel a task by moving it to the **Canceled** list. 
+
+### Due dates (Scheduled / Deadline)
+
+Date sync is **opt-in** (`syncDates: false` by default). Enable it by setting `"syncDates": true` in `~/.logseq-reminders-sync/config.json`.
+
+When enabled, the Logseq **Deadline** date takes precedence over **Scheduled** when both are set. Whichever field is present maps to the reminder's due date in Reminders, and vice versa — a due date set or changed in Reminders writes back to the same field in Logseq. If a task has no date on either side, dates are left alone.
+
+Conflict resolution for dates follows the same rule as everything else: if both sides changed since the last sync, the most recently edited one wins.
 
 ### When both sides changed
 
@@ -71,8 +79,9 @@ Setup walks you through everything:
 1. Requests Reminders access (approve the macOS prompt).
 2. Lets you pick which Logseq graph to sync.
 3. Creates the five Reminders lists.
-4. Writes the config file.
-5. Optionally installs a background agent that syncs automatically on a schedule (default: every 15 minutes).
+4. Asks where newly-adopted reminders should land: **top level of today's journal** (default) or **under a named sub-block** (e.g. `📥 Inbox`).
+5. Writes the config file.
+6. Optionally installs a background agent that syncs automatically on a schedule (default: every 15 minutes).
 
 That's it — once setup finishes, prioritized tasks start appearing in Reminders on the next sync.
 
@@ -109,8 +118,7 @@ Config lives at `~/.logseq-reminders-sync/config.json` (created by `setup`). Fie
 |-------|---------|
 | `graph` | The Logseq graph name to sync. |
 | `statusLists` | Map of status → `{id, title}` for each of the 5 lists. Keys are canonical statuses (`Backlog`, `Todo`, `Doing`, `In Review`, `Canceled`). |
-| `journalInboxTitle` | Title of the inbox block on journal pages where adopted reminders land. |
-| `fallbackInboxPage` | Page used if the journal inbox isn't available. |
+| `journalInboxTitle` | Where newly-adopted reminders land on today's journal page. Omit (or set to `null`) to place tasks at the **top level** of the journal; set to a block title (e.g. `"📥 Inbox"`) to nest them under that sub-block. Configured via `setup`. |
 | `conflictPolicy` | Conflict resolution strategy (`mostRecentWins`). |
 | `syncDates` | Sync due dates both ways. Default `false`. |
 | `syncPriority` | Sync task priority both ways. Default `true`. |
