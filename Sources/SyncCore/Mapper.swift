@@ -146,9 +146,6 @@ public enum Mapper {
             // lastStatus is set to logseqStatus and the next pass is .converged.
             let reminderWins = reminderMs.map { $0 > logseqMs } ?? false
             let winner = reminderWins ? effectiveReminderStatus : logseqStatus
-            let loser  = reminderWins ? logseqStatus : effectiveReminderStatus
-
-            _ = loser  // suppress warning — winner is what matters
 
             if reminderWins {
                 let action = StatusMergeAction.pushToLogseq(winner)

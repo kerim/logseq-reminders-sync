@@ -135,7 +135,7 @@ struct SyncEngine {
             guard let blockStatus = block.status else {
                 logger.log("Rebuild target \(blockUUID.prefix(8))… has no status (incomplete capture) — re-promoting")
                 let capturedPriority: LogseqPriority? = config.syncPriority
-                    ? Mapper.reminderPriorityToLogseq(snap.priority).map { $0 == .low ? .medium : $0 } ?? .medium
+                    ? Mapper.reminderPriorityToLogseq(snap.priority) ?? .medium
                     : nil
                 // Re-run the promote; ignore error (will retry next pass)
                 _ = try? await logseq.run([
@@ -551,7 +551,7 @@ struct SyncEngine {
 
             // Seed full baseline so the next reconcile lands on .converged.
             let dueDateMs = snap.dueComponents.flatMap { Mapper.dueComponentsToEpochMs($0) }
-            let seededPriority: LogseqPriority? = config.syncPriority ? (capturedPriority ?? .medium) : nil
+            let seededPriority: LogseqPriority? = config.syncPriority ? capturedPriority : nil
             let pair = SyncPair(
                 logseqUUID: taskUUID,
                 reminderLocalId: snap.localId,
