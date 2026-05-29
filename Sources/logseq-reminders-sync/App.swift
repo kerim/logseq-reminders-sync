@@ -3,8 +3,8 @@ import SyncCore
 
 @main
 struct App {
-    // BUILD 26 (switch-graph tolerates deleted lists; setup allows re-setup when old graph is gone)
-    static let buildVersion = "26"
+    // BUILD 27 (simplify cleanup: extract LaunchdAgent.guiDomain helper)
+    static let buildVersion = "27"
     static let appVersion = "0.1.0"
 
     static func main() async throws {

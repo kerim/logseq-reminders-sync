@@ -63,19 +63,20 @@ enum LaunchdAgent {
         }
     }
 
+    /// The per-user GUI launchd domain (`gui/<uid>`) the agent lives in.
+    private static var guiDomain: String { "gui/\(getuid())" }
+
     /// Stop and unload the agent. Safe to call when not loaded.
     @discardableResult
     static func bootout() -> Bool {
-        let domain = "gui/\(getuid())"
-        if runLaunchctl(["bootout", "\(domain)/\(label)"]) { return true }
+        if runLaunchctl(["bootout", "\(guiDomain)/\(label)"]) { return true }
         return runLaunchctl(["unload", plistURL.path])
     }
 
     /// Load and start the agent from the on-disk plist.
     @discardableResult
     static func bootstrap() -> Bool {
-        let domain = "gui/\(getuid())"
-        if runLaunchctl(["bootstrap", domain, plistURL.path]) { return true }
+        if runLaunchctl(["bootstrap", guiDomain, plistURL.path]) { return true }
         return runLaunchctl(["load", "-w", plistURL.path])
     }
 
