@@ -21,11 +21,13 @@ disabled_rules:
   - comma                       # column alignment uses padding spaces after commas
   - redundant_string_enum_value # explicit raw values pin the Codable/state.json wire format
 
-# statusMergeAction takes 6 semantically distinct 3-way-merge inputs — grouping
-# them into a struct would obscure the pure-function contract and harm testability.
+# statusMergeAction / dateMergeAction take their semantically distinct 3-way-merge
+# inputs as flat parameters — grouping them into a struct would obscure the
+# pure-function contract and harm testability. dateMergeAction carries 7 (date + its
+# source field + the two conflict tie-break operands), one more than statusMergeAction.
 function_parameter_count:
-  warning: 6
-  error: 8
+  warning: 7
+  error: 9
 
 # SyncEngine.run() is the documented single source of truth — keep it whole.
 # Length/complexity stay as warnings (visible if it ever grows) but never

@@ -619,78 +619,56 @@ struct SyncEngine {
                                                      scheduled: block.scheduled)
         let reminderDueMs = live.dueComponents.flatMap { Mapper.dueComponentsToEpochMs($0) }
 
-        if updated.lastDueDateMs == nil {
-            let baseline = logseqDueMs ?? reminderDueMs
-            if let b = baseline {
-                if let l = logseqDueMs, let r = reminderDueMs, l != r {
-                    logger.log(
-                        "Initial-upgrade date divergence for \(updated.logseqUUID.prefix(8))…" +
-                        " — Logseq \(l), Reminder \(r) — both kept; next edit will resolve")
-                }
-                updated.lastDueDateMs = b
-                updated.lastDueSource = logseqField
-            }
-            return updated
-        }
+        let action = Mapper.dateMergeAction(
+            logseqMs: logseqDueMs,
+            reminderMs: reminderDueMs,
+            logseqField: logseqField,
+            lastDueMs: updated.lastDueDateMs,
+            lastDueSource: updated.lastDueSource,
+            logseqUpdatedMs: block.updatedAt,
+            reminderUpdatedMs: preWriteReminderMs)
 
-        let logseqDateChanged   = logseqDueMs   != updated.lastDueDateMs
-        let reminderDateChanged = reminderDueMs != updated.lastDueDateMs
+        // Executor: the decision is pure (Mapper.dateMergeAction); side effects + baseline
+        // assignment live here. Every action that writes MUST also set the baseline, or the
+        // change re-fires every pass (write-loop).
+        switch action {
+        case .noChange:
+            break
 
-        switch (logseqDateChanged, reminderDateChanged) {
-        case (false, false): break
+        case let .recordBaseline(ms, source):
+            updated.lastDueDateMs = ms
+            updated.lastDueSource = ms == nil ? nil : source
 
-        case (true, false):
-            logger.log("Date Logseq→Reminders for \(updated.logseqUUID.prefix(8))…")
-            if let newMs = logseqDueMs {
+        case let .pushToReminder(ms, source):
+            if let ms {
+                logger.log("Date Logseq→Reminders for \(updated.logseqUUID.prefix(8))…")
                 try await reminders.setDueComponents(
-                    localId: updated.reminderLocalId, Mapper.epochMsToDueComponents(newMs))
+                    localId: updated.reminderLocalId, Mapper.epochMsToDueComponents(ms))
             } else {
+                logger.log("Date clear→Reminders for \(updated.logseqUUID.prefix(8))…")
                 try await reminders.clearDueComponents(localId: updated.reminderLocalId)
             }
-            updated.lastDueDateMs = logseqDueMs
-            updated.lastDueSource = logseqField
+            updated.lastDueDateMs = ms
+            updated.lastDueSource = ms == nil ? nil : source
 
-        case (false, true):
-            let source = updated.lastDueSource ?? .scheduled
-            logger.log("Date Reminders→Logseq for \(updated.logseqUUID.prefix(8))… field=\(source.rawValue)")
-            if let newMs = reminderDueMs {
+        case let .pushToLogseq(ms, source):
+            let src = source ?? .scheduled
+            if let ms {
+                logger.log("Date Reminders→Logseq for \(updated.logseqUUID.prefix(8))… field=\(src.rawValue)")
                 try await logseq.setBlockDate(
-                    blockUUID: updated.logseqUUID, field: source, epochMs: newMs)
-                if source == .scheduled && block.deadline != nil {
+                    blockUUID: updated.logseqUUID, field: src, epochMs: ms)
+                // Retire a stale Logseq deadline when we just wrote a scheduled date, else
+                // preferredDateField would re-diverge next pass. Best-effort: a failed
+                // cleanup must not abort the pass (intentional try? vs try await asymmetry).
+                if src == .scheduled && block.deadline != nil {
                     try? await logseq.clearBlockDate(blockUUID: updated.logseqUUID, field: .deadline)
-                    updated.lastDueSource = .scheduled
                 }
             } else {
-                try await logseq.clearBlockDate(blockUUID: updated.logseqUUID, field: source)
+                logger.log("Date clear→Logseq for \(updated.logseqUUID.prefix(8))… field=\(src.rawValue)")
+                try await logseq.clearBlockDate(blockUUID: updated.logseqUUID, field: src)
             }
-            updated.lastDueDateMs = reminderDueMs
-            if reminderDueMs == nil { updated.lastDueSource = nil }
-
-        case (true, true):
-            let logseqMs   = block.updatedAt
-            let reminderMs = preWriteReminderMs ?? 0   // pre-write operand
-            if logseqMs >= reminderMs {
-                logger.log("Date CONFLICT \(updated.logseqUUID.prefix(8))…: Logseq wins")
-                if let newMs = logseqDueMs {
-                    try await reminders.setDueComponents(
-                        localId: updated.reminderLocalId, Mapper.epochMsToDueComponents(newMs))
-                } else {
-                    try await reminders.clearDueComponents(localId: updated.reminderLocalId)
-                }
-                updated.lastDueDateMs = logseqDueMs
-                updated.lastDueSource = logseqField
-            } else {
-                logger.log("Date CONFLICT \(updated.logseqUUID.prefix(8))…: Reminder wins")
-                let source = updated.lastDueSource ?? .scheduled
-                if let newMs = reminderDueMs {
-                    try await logseq.setBlockDate(
-                        blockUUID: updated.logseqUUID, field: source, epochMs: newMs)
-                } else {
-                    try await logseq.clearBlockDate(blockUUID: updated.logseqUUID, field: source)
-                }
-                updated.lastDueDateMs = reminderDueMs
-                if reminderDueMs == nil { updated.lastDueSource = nil }
-            }
+            updated.lastDueDateMs = ms
+            updated.lastDueSource = ms == nil ? nil : src
         }
         return updated
     }

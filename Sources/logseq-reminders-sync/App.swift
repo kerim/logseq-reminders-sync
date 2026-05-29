@@ -3,8 +3,8 @@ import SyncCore
 
 @main
 struct App {
-    // BUILD 29 (syncDates default changed from false to true)
-    static let buildVersion = "29"
+    // BUILD 30 (date merge: seed empty side at baseline instead of wiping the populated side)
+    static let buildVersion = "30"
     static let appVersion = "0.1.0"
 
     static func main() async throws {
