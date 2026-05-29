@@ -20,16 +20,15 @@ struct SyncEngine {
     }
 
     mutating func run() async throws {
-        logger.log("Sync started — graph: \(config.graph), list: \(config.remindersListTitle)")
+        logger.log("Sync started — graph: \(config.graph)")
 
-        // ── Step 3(a): Read Doing tasks and paired recurring non-Doing blocks ──
-        let doingTasks = try await logseq.fetchDoingTasks()
-        var doingByUUID: [String: LogseqBlock] = [:]
-        for t in doingTasks { doingByUUID[t.uuid] = t }
+        // ── Step 3(a): Read prioritized tasks (Urgent/High/Medium, any status) ──
+        let prioritizedTasks = try await logseq.fetchPrioritizedTasks()
+        var prioritizedByUUID: [String: LogseqBlock] = [:]
+        for t in prioritizedTasks { prioritizedByUUID[t.uuid] = t }
+        logger.log("Prioritized tasks: \(prioritizedTasks.count)")
 
-        logger.log("Doing tasks: \(doingTasks.count)")
-
-        // Pre-fetch property maps for confirm-guard + reindex
+        // Pre-fetch property maps for confirm-guard and reindex guard.
         let allWithRemIds = try await logseq.fetchAllBlocksWithReminderIds()
         var blockUUIDForExtId: [String: String] = [:]
         var extIdCounts: [String: Int] = [:]
@@ -46,25 +45,26 @@ struct SyncEngine {
         var captureUUIDForExtId: [String: String] = [:]
         for (uuid, extId) in allWithCapIds { captureUUIDForExtId[extId] = uuid }
 
-        // ── Step 3(b): Fetch out-of-filter linked blocks ─────────────────────
+        // ── Step 3(b): Fetch out-of-filter linked blocks ──────────────────────
+        // Gate uses prioritizedByUUID (was doingByUUID) so blocks that moved off
+        // priority are correctly identified as out-of-filter.
         var linkedStatus: [String: LogseqBlock?] = [:]
-        for pair in state.pairs where doingByUUID[pair.logseqUUID] == nil {
+        for pair in state.pairs where prioritizedByUUID[pair.logseqUUID] == nil {
             linkedStatus[pair.logseqUUID] = try await logseq.fetchBlock(uuid: pair.logseqUUID)
         }
 
         // ── Step 3(c): Reindex guard ──────────────────────────────────────────
+        // Gate uses prioritizedByUUID — a still-prioritized block whose UUID was
+        // regenerated must have its pair's UUID corrected before teardown checks run.
         for i in state.pairs.indices {
             let pair = state.pairs[i]
-            guard doingByUUID[pair.logseqUUID] == nil else { continue }
+            guard prioritizedByUUID[pair.logseqUUID] == nil else { continue }
             guard let found = linkedStatus[pair.logseqUUID], found == nil else { continue }
-            // Block not found by UUID — check if UUID changed (reindex)
             if let newUUID = blockUUIDForExtId[pair.reminderExtId], newUUID != pair.logseqUUID {
                 logger.log("Reindex: \(pair.logseqUUID.prefix(8))… → \(newUUID.prefix(8))…")
                 linkedStatus[newUUID] = try await logseq.fetchBlock(uuid: newUUID)
                 linkedStatus.removeValue(forKey: pair.logseqUUID)
                 state.pairs[i].logseqUUID = newUUID
-                // The backlink embeds the old UUID — rewrite it so the reminder's
-                // URL field keeps opening the right block.
                 await writeBacklink(localId: pair.reminderLocalId, blockUUID: newUUID)
             }
         }
@@ -78,7 +78,7 @@ struct SyncEngine {
         }()
 
         let incompleteSnaps = try await reminders.fetchIncomplete()
-        let completedSnaps = try await reminders.fetchCompleted(since: lookback)
+        let completedSnaps  = try await reminders.fetchCompleted(since: lookback)
         let allSnaps = incompleteSnaps + completedSnaps
         logger.log("Reminders: \(incompleteSnaps.count) incomplete, \(completedSnaps.count) recently completed")
 
@@ -96,94 +96,101 @@ struct SyncEngine {
         var skippedArchivedCount = 0
         var classified: [(ReminderSnapshot, Cls)] = []
         for snap in allSnaps {
-            // 1. In state by localId
             if let idx = pairIndexByLocalId[snap.localId] {
                 classified.append((snap, .linked(idx: idx))); continue
             }
-            // 2. In state by extId
             let extMatches = state.pairs.enumerated().filter { $0.element.reminderExtId == snap.extId }
             if extMatches.count == 1 {
                 classified.append((snap, .linked(idx: extMatches[0].offset))); continue
             } else if extMatches.count > 1 {
                 logger.log("WARN: Ambiguous extId \(snap.extId.prefix(8))…")
             }
-            // 3. Archived (completed recurring cycle) — skip entirely
-            if archivedExtIdSet.contains(snap.extId) {
-                skippedArchivedCount += 1
-                continue
-            }
-            // 4. Logseq reminder-id property index → linked mirror (rebuild)
+            if archivedExtIdSet.contains(snap.extId) { skippedArchivedCount += 1; continue }
             if let blockUUID = blockUUIDForExtId[snap.extId] {
                 classified.append((snap, .linkedRebuild(blockUUID: blockUUID))); continue
             }
-            // 5. Logseq captured-reminder-id property index → already ingested
             if let journalUUID = captureUUIDForExtId[snap.extId] {
                 classified.append((snap, .alreadyIngested(journalUUID: journalUUID))); continue
             }
-            // 6. Anything else → fresh capture (user-typed reminder in the Logseq list)
+            // Only reminders in one of the 5 managed lists can be fresh captures.
+            guard config.managedListIds.contains(snap.listId) else { continue }
             classified.append((snap, .fresh))
         }
         if skippedArchivedCount > 0 {
             logger.log("Skipped \(skippedArchivedCount) archived recurring-cycle reminder(s)")
         }
 
-        let freshCount = classified.filter { if case .fresh = $0.1 { true } else { false } }.count
-        let linkedCount = classified.filter { if case .linked = $0.1 { true } else { false } }.count
-        let rebuildCount = classified.filter { if case .linkedRebuild = $0.1 { true } else { false } }.count
-        let ingestedCount = classified.filter { if case .alreadyIngested = $0.1 { true } else { false } }.count
-        logger.log("Classified: \(linkedCount) linked, \(rebuildCount) rebuild, \(ingestedCount) ingested, \(freshCount) fresh")
-
-        // ── Step 4.5: Rebuild pairs from Logseq reminder-id property index ────
+        // ── Step 4.5: Rebuild pairs from reminder-id property index ──────────
         var rebuiltLocalIds = Set<String>()
         for (snap, cls) in classified {
             guard case .linkedRebuild(let blockUUID) = cls else { continue }
             guard let block = try await logseq.fetchBlock(uuid: blockUUID) else {
-                // Block disappeared between the property scan and now — orphan reminder.
                 logger.log("Rebuild target \(blockUUID.prefix(8))… gone → deleting reminder")
                 try await reminders.deleteReminder(localId: snap.localId)
                 continue
             }
+
+            // Guard: if the block has no status (never promoted), treat as incomplete
+            // capture rather than rebuilding — a teardown would delete the user's reminder.
+            guard let blockStatus = block.status else {
+                logger.log("Rebuild target \(blockUUID.prefix(8))… has no status (incomplete capture) — re-promoting")
+                let capturedPriority: LogseqPriority? = config.syncPriority
+                    ? Mapper.reminderPriorityToLogseq(snap.priority).map { $0 == .low ? .medium : $0 } ?? .medium
+                    : nil
+                // Re-run the promote; ignore error (will retry next pass)
+                _ = try? await logseq.run([
+                    "upsert", "task", "-g", config.graph,
+                    "--uuid", blockUUID,
+                    "--status", config.status(forListId: snap.listId) ?? "Todo",
+                    "--output", "json"
+                ])
+                if let p = capturedPriority {
+                    _ = try? await logseq.run([
+                        "upsert", "task", "-g", config.graph,
+                        "--uuid", blockUUID,
+                        "--priority", p.rawValue,
+                        "--output", "json"
+                    ])
+                }
+                continue
+            }
+
             logger.log("Rebuilding pair: \(blockUUID.prefix(8))… ↔ reminder \(snap.localId.prefix(8))…")
-            let status = block.status ?? "Doing"
-            let logseqDone = Mapper.logseqStatusIsCompleted(status)
+            let logseqDone = Mapper.logseqStatusIsCompleted(blockStatus)
             let childTitles = try await logseq.fetchChildTitles(blockUUID: blockUUID)
             let (titleStr, notesStr) = try await buildTitleAndNotes(
-                blockTitle: block.title, childTitles: childTitles
-            )
-            // Priority: treat Logseq as authoritative at rebuild (matches status pattern).
-            // When syncPriority is disabled, seed lastPriority=nil so a later toggle-on
-            // resolves through timestamps instead of silently letting Apple win.
+                blockTitle: block.title, childTitles: childTitles)
             let logseqPrio = block.priority?.forSync
             let targetApplePrio = Mapper.logseqPriorityToReminder(logseqPrio)
             if config.syncPriority && targetApplePrio != snap.priority {
                 logger.log("  → setting reminder priority \(targetApplePrio) to match Logseq")
                 try? await reminders.setPriority(localId: snap.localId, targetApplePrio)
             }
+            // Move reminder to the correct list if Logseq status doesn't match.
+            if !logseqDone, let targetListId = config.listId(forStatus: blockStatus),
+               snap.listId != targetListId {
+                _ = try? await reminders.moveReminder(localId: snap.localId, toListId: targetListId)
+            }
             let pair = SyncPair(
                 logseqUUID: blockUUID,
                 reminderLocalId: snap.localId,
                 reminderExtId: snap.extId,
-                lastStatus: status,
-                lastOpenStatus: logseqDone ? "Doing" : status,
-                lastCompleted: logseqDone,
+                lastStatus: blockStatus,
+                lastOpenStatus: logseqDone ? "Doing" : blockStatus,
+                lastCompleted: snap.isCompleted,
                 lastLogseqUpdated: block.updatedAt,
                 lastReminderMod: snap.lastModified.map { ms($0) },
                 lastTitle: titleStr,
                 lastNotesHash: Mapper.hashNotes(notesStr),
-                lastPriority: config.syncPriority ? logseqPrio : nil
-            )
+                lastPriority: config.syncPriority ? logseqPrio : nil)
             state.pairs.append(pair)
-            // Force-sync reminder to Logseq state (authoritative)
             if logseqDone && !snap.isCompleted {
-                logger.log("  → completing reminder to match Logseq Done")
                 try await reminders.completeReminder(localId: snap.localId)
             } else if !logseqDone && snap.isCompleted {
-                logger.log("  → uncompleting reminder to match Logseq open state")
                 try? await reminders.updateReminder(localId: snap.localId, isCompleted: false)
             }
             rebuiltLocalIds.insert(snap.localId)
         }
-        // Rebuild index after appending
         pairIndexByLocalId = [:]
         for (i, p) in state.pairs.enumerated() { pairIndexByLocalId[p.reminderLocalId] = i }
 
@@ -195,19 +202,18 @@ struct SyncEngine {
             } + rebuiltLocalIds
         )
 
-        var pairsToRemove = Set<String>()  // logseqUUIDs
+        var pairsToRemove = Set<String>()
 
         for i in state.pairs.indices {
             let pair = state.pairs[i]
             let uuid = pair.logseqUUID
 
-            // Skip newly-rebuilt pairs (already force-synced above)
             if rebuiltLocalIds.contains(pair.reminderLocalId) { continue }
 
             // Block disposition
             let currentBlock: LogseqBlock?
             let isInFilter: Bool
-            if let b = doingByUUID[uuid] {
+            if let b = prioritizedByUUID[uuid] {
                 currentBlock = b; isInFilter = true
             } else if let found = linkedStatus[uuid], let b = found {
                 currentBlock = b; isInFilter = false
@@ -215,7 +221,6 @@ struct SyncEngine {
                 currentBlock = nil; isInFilter = false
             }
 
-            // Block genuinely deleted?
             if currentBlock == nil {
                 logger.log("Block \(uuid.prefix(8))… deleted → deleting reminder")
                 try await reminders.deleteReminder(localId: pair.reminderLocalId)
@@ -223,211 +228,260 @@ struct SyncEngine {
             }
 
             let block = currentBlock!
-            let currentStatus = block.status ?? "Doing"
-            let logseqCompleted = Mapper.logseqStatusIsCompleted(currentStatus)
+            let currentStatus = block.status   // nil handled below
 
-            // Hoist snapshot fetch so the left-filter branch can inspect live.isCompleted.
-            // (We fetch even for out-of-filter blocks because the recurrence carve-out needs it.)
             guard let live = await reminders.fetchSnapshot(localId: pair.reminderLocalId) else {
                 pairsToRemove.insert(uuid); continue
             }
 
-            // Block left filter?
-            if !isInFilter {
-                if logseqCompleted {
-                    logger.log("Block \(uuid.prefix(8))… → \(currentStatus), completing reminder")
-                    if !pair.lastCompleted {
-                        try await reminders.completeReminder(localId: pair.reminderLocalId)
-                    }
-                    pairsToRemove.insert(uuid); continue
-                } else if block.isRecurring && (pair.lastCompleted || live.isCompleted) {
-                    // Recurring task cycle completed: Logseq auto-advanced to an open
-                    // status after the user marked the reminder Done. Drop the pair and
-                    // archive the reminder's extId so future syncs don't re-capture it.
-                    // The completed reminder stays in Apple Reminders' Completed section
-                    // as history. To re-engage the task, the user moves it back to Doing.
-                    if !state.archivedExtIds.contains(pair.reminderExtId) {
-                        state.archivedExtIds.append(pair.reminderExtId)
-                    }
-                    logger.log("Recurring \(uuid.prefix(8))… cycle complete (\(currentStatus)) — pair dropped, reminder archived")
-                    pairsToRemove.insert(uuid); continue
-                } else {
-                    logger.log("Block \(uuid.prefix(8))… left filter (\(currentStatus)) → deleting reminder")
-                    try await reminders.deleteReminder(localId: pair.reminderLocalId)
-                    pairsToRemove.insert(uuid); continue
-                }
+            // ── F.2.1: Out-of-managed-lists opt-out ──────────────────────────
+            // A reminder dragged to an unmanaged list is visible via fetchSnapshot
+            // but config.status returns nil. Drop without touching Logseq — the
+            // still-prioritized task gets a fresh reminder in Step 6 next run.
+            if isInFilter, config.status(forListId: live.listId) == nil, !live.isCompleted {
+                logger.log("Block \(uuid.prefix(8))… reminder dragged to unmanaged list → dropping pair")
+                pairsToRemove.insert(uuid); continue
             }
 
-            // Reminder gone?
+            // Block left filter (priority no longer syncable)?
+            if !isInFilter {
+                // Any out-of-filter pair is due to priority loss (filter is priority-only).
+                // Delete the reminder and drop the pair.
+                logger.log("Block \(uuid.prefix(8))… left priority filter (\(currentStatus ?? "no-status")) → deleting reminder")
+                try await reminders.deleteReminder(localId: pair.reminderLocalId)
+                pairsToRemove.insert(uuid); continue
+            }
+
+            // Reminder gone from managed lists?
             if !linkedLocalIds.contains(pair.reminderLocalId) {
                 logger.log("Reminder for \(uuid.prefix(8))… gone → dropping link (will re-mirror)")
                 pairsToRemove.insert(uuid); continue
             }
 
-            // Confirm-on-write guard: ensure the localId hasn't been reused for a
-            // different reminder. extId is regenerated on reminder re-creation, so
-            // if the live reminder's extId still matches our pair, it IS our
-            // reminder. As a fallback, check that the Logseq block still carries
-            // the matching reminder-id property.
             let extIdMatch = live.extId == pair.reminderExtId
-            let propMatch = blockUUIDForExtId[pair.reminderExtId] == uuid
+            let propMatch  = blockUUIDForExtId[pair.reminderExtId] == uuid
             guard extIdMatch || propMatch else {
                 logger.log("WARN: Confirm guard failed for \(uuid.prefix(8))… — skipping")
                 continue
             }
 
-            // ── 3-way merge ──────────────────────────────────────────────────
-            let logseqChanged = currentStatus != pair.lastStatus
-            let reminderCompleted = live.isCompleted
-            let reminderChanged = reminderCompleted != pair.lastCompleted
-            let logseqMs = block.updatedAt
-            let reminderMs: Int64? = live.lastModified.map { ms($0) }
+            // ── Capture preWriteReminderMs before any write ───────────────────
+            // This is the conflict operand for the DATE and PRIORITY axes.
+            // The STATUS axis may use a synthesized now() for list-moves that
+            // don't bump lastModifiedDate — scoped only to statusMergeAction.
+            let preWriteReminderMs: Int64? = live.lastModified.map { ms($0) }
 
             var updated = pair
 
-            if logseqCompleted == reminderCompleted {
-                // Both sides agree — converged
-                if logseqChanged || reminderChanged {
-                    logger.log("Converged for \(uuid.prefix(8))… (\(currentStatus)/completed:\(reminderCompleted))")
+            // ── F.2.2: Recurring-completed rotation ───────────────────────────
+            // Must run for EVERY in-filter pair (was wrongly gated on !isInFilter).
+            // Use the broader condition matching the existing code (line 243).
+            if block.isRecurring && (pair.lastCompleted || live.isCompleted) {
+                if !state.archivedExtIds.contains(pair.reminderExtId) {
+                    state.archivedExtIds.append(pair.reminderExtId)
                 }
-                updated.lastStatus = currentStatus
-                if !logseqCompleted { updated.lastOpenStatus = currentStatus }
-                updated.lastCompleted = reminderCompleted
-                updated.lastReminderMod = reminderMs
+                logger.log("Recurring \(uuid.prefix(8))… cycle complete — pair dropped, reminder archived")
+                pairsToRemove.insert(uuid); continue
+            }
+
+            // ── F.2.3: Priority-loss teardown ─────────────────────────────────
+            // Unconditional Logseq-wins: Low is the explicit de-prioritize marker;
+            // Logseq deliberately owns it — not a timestamp race to resolve.
+            let logseqEffective = block.priority?.forSync
+            if logseqEffective == nil {
+                logger.log("Block \(uuid.prefix(8))… priority cleared in Logseq → deleting reminder")
+                try await logseq.setBlockPriority(blockUUID: uuid, priority: .low)
+                try await reminders.deleteReminder(localId: pair.reminderLocalId)
+                pairsToRemove.insert(uuid); continue
+            }
+
+            // ── F.2.4: Priority 3-way merge (returns action enum) ────────────
+            if config.syncPriority {
+                let prioResult = try await mergePriority(
+                    updated: updated, block: block, live: live, preWriteReminderMs: preWriteReminderMs)
+                if case .appleCleared(let u) = prioResult {
+                    // Apple cleared priority and won the conflict → set Logseq to Low and teardown.
+                    logger.log("Block \(uuid.prefix(8))… Apple cleared priority → setting Logseq Low, deleting reminder")
+                    try await logseq.setBlockPriority(blockUUID: uuid, priority: .low)
+                    try await reminders.deleteReminder(localId: pair.reminderLocalId)
+                    pairsToRemove.insert(uuid); continue
+                }
+                updated = prioResult.pair
+            }
+
+            // ── F.2.5: Unified status merge ───────────────────────────────────
+            guard let blockStatus = currentStatus else {
+                // Block has no status property — log and skip; never default to "Doing".
+                logger.log("WARN: Block \(uuid.prefix(8))… has no status — skipping status merge")
+                state.pairs[i] = updated; continue
+            }
+            let effectiveReminderStatus: String?
+            if live.isCompleted {
+                effectiveReminderStatus = "Done"
+            } else {
+                effectiveReminderStatus = config.status(forListId: live.listId)
+            }
+            guard let effStatus = effectiveReminderStatus else {
+                // Should not reach here after F.2.1, but guard defensively.
+                logger.log("WARN: Effective reminder status nil for \(uuid.prefix(8))… — skipping")
+                state.pairs[i] = updated; continue
+            }
+
+            let logseqMs = block.updatedAt
+            // For the status axis: if a list-move happened but EventKit didn't bump
+            // lastModifiedDate (checked in POC — it DID bump it, so synthesized now()
+            // is moot), use preWriteReminderMs. The POC confirmed bumping; this path is
+            // kept as a documented safeguard.
+            // Since the POC confirmed .calendar reassignment bumps lastModifiedDate,
+            // preWriteReminderMs is already the correct conflict operand for list-moves.
+            // No synthesized now() stamp is needed.
+            let statusReminderMs: Int64? = preWriteReminderMs
+
+            let action = Mapper.statusMergeAction(
+                logseqStatus: blockStatus,
+                effectiveReminderStatus: effStatus,
+                lastStatus: pair.lastStatus,
+                logseqMs: logseqMs,
+                reminderMs: statusReminderMs,
+                isRecurring: block.isRecurring)
+
+            switch action {
+            case .converged(let winningStatus):
+                updated.lastStatus = winningStatus
+                if !Mapper.logseqStatusIsCompleted(winningStatus) {
+                    updated.lastOpenStatus = winningStatus
+                }
+                updated.lastCompleted = live.isCompleted
+                updated.lastReminderMod = preWriteReminderMs
                 updated.lastLogseqUpdated = logseqMs
-            } else if logseqChanged && !reminderChanged {
-                // Logseq changed → push to Reminder
-                logger.log("Logseq changed \(uuid.prefix(8))…: \(pair.lastStatus) → \(currentStatus)")
-                if logseqCompleted {
+
+            case .pushToReminder(let targetStatus):
+                logger.log("Status \(pair.lastStatus)→\(targetStatus) for \(uuid.prefix(8))… (Logseq wins)")
+                if targetStatus == "Done" {
                     try await reminders.completeReminder(localId: pair.reminderLocalId)
                 } else {
-                    try? await reminders.updateReminder(localId: pair.reminderLocalId, isCompleted: false)
+                    // Uncomplete if currently completed, then move to target list.
+                    if live.isCompleted {
+                        _ = try await reminders.uncompleteReminder(localId: pair.reminderLocalId)
+                    }
+                    if let targetListId = config.listId(forStatus: targetStatus),
+                       live.listId != targetListId {
+                        if let moved = try await reminders.moveReminder(
+                            localId: pair.reminderLocalId, toListId: targetListId) {
+                            // Update identity from post-move snapshot (IDs may change on move).
+                            updated.reminderLocalId = moved.localId
+                            updated.reminderExtId   = moved.extId
+                            if let fresh = await reminders.fetchSnapshot(localId: moved.localId) {
+                                updated.lastReminderMod = fresh.lastModified.map { ms($0) }
+                                updated.lastCompleted   = fresh.isCompleted
+                            }
+                        }
+                    }
                 }
-                if let fresh = await reminders.fetchSnapshot(localId: pair.reminderLocalId) {
-                    updated.lastReminderMod = fresh.lastModified.map { ms($0) }
-                    updated.lastCompleted = fresh.isCompleted
+                if updated.lastReminderMod == preWriteReminderMs {
+                    // No post-write re-fetch yet — fetch now.
+                    if let fresh = await reminders.fetchSnapshot(localId: updated.reminderLocalId) {
+                        updated.lastReminderMod = fresh.lastModified.map { ms($0) }
+                        updated.lastCompleted   = fresh.isCompleted
+                    }
                 }
-                updated.lastStatus = currentStatus
-                if !logseqCompleted { updated.lastOpenStatus = currentStatus }
+                updated.lastStatus = targetStatus
+                if !Mapper.logseqStatusIsCompleted(targetStatus) {
+                    updated.lastOpenStatus = targetStatus
+                }
                 updated.lastLogseqUpdated = logseqMs
-            } else if !logseqChanged && reminderChanged {
-                // Reminder changed → push to Logseq
-                logger.log("Reminder changed \(uuid.prefix(8))…: \(pair.lastCompleted) → \(reminderCompleted)")
-                if reminderCompleted {
-                    try await logseq.updateTaskStatus(blockUUID: uuid, status: "Done")
-                } else {
-                    let restore = Mapper.openStatusToRestore(lastOpenStatus: pair.lastOpenStatus)
-                    try await logseq.updateTaskStatus(blockUUID: uuid, status: restore)
-                }
+
+            case .pushToLogseq(let targetStatus):
+                logger.log("Status \(pair.lastStatus)→\(targetStatus) for \(uuid.prefix(8))… (Reminder wins)")
+                try await logseq.updateTaskStatus(blockUUID: uuid, status: targetStatus)
                 if let fresh = try await logseq.fetchBlock(uuid: uuid) {
                     updated.lastLogseqUpdated = fresh.updatedAt
-                    let newStatus = fresh.status ?? currentStatus
+                    let newStatus = fresh.status ?? targetStatus
                     updated.lastStatus = newStatus
                     if !Mapper.logseqStatusIsCompleted(newStatus) { updated.lastOpenStatus = newStatus }
                 }
-                updated.lastReminderMod = reminderMs
-                updated.lastCompleted = reminderCompleted
-            } else {
-                // Both changed and disagree — conflict resolution
-                let rMs = reminderMs ?? 0
-                if logseqMs == rMs {
-                    logger.log("CONFLICT TIE \(uuid.prefix(8))… — no write, state updated")
-                    updated.lastStatus = currentStatus
-                    if !logseqCompleted { updated.lastOpenStatus = currentStatus }
-                    updated.lastCompleted = reminderCompleted
-                    updated.lastReminderMod = reminderMs
-                    updated.lastLogseqUpdated = logseqMs
-                } else if logseqMs > rMs {
-                    logger.log("CONFLICT \(uuid.prefix(8))…: Logseq wins (newer)")
-                    if logseqCompleted {
-                        try await reminders.completeReminder(localId: pair.reminderLocalId)
-                    } else {
-                        try? await reminders.updateReminder(localId: pair.reminderLocalId, isCompleted: false)
-                    }
-                    updated.lastStatus = currentStatus
-                    if !logseqCompleted { updated.lastOpenStatus = currentStatus }
-                    updated.lastLogseqUpdated = logseqMs
-                    updated.lastCompleted = logseqCompleted
-                } else {
-                    logger.log("CONFLICT \(uuid.prefix(8))…: Reminder wins (newer)")
-                    if reminderCompleted {
-                        try await logseq.updateTaskStatus(blockUUID: uuid, status: "Done")
-                    } else {
-                        let restore = Mapper.openStatusToRestore(lastOpenStatus: pair.lastOpenStatus)
-                        try await logseq.updateTaskStatus(blockUUID: uuid, status: restore)
-                    }
-                    updated.lastReminderMod = reminderMs
-                    updated.lastCompleted = reminderCompleted
-                }
+                updated.lastReminderMod = preWriteReminderMs
+                updated.lastCompleted   = live.isCompleted
+
+            case .recurringDeferred:
+                // F.2.2 should have handled recurring completion above.
+                // This is a belt-and-suspenders: recurring block + reminder completed
+                // but F.2.2 guard condition not met — skip rather than push Done to Logseq.
+                logger.log("Recurring \(uuid.prefix(8))… status deferred (recurring guard)")
+                updated.lastCompleted = live.isCompleted
+                updated.lastReminderMod = preWriteReminderMs
             }
 
             // ── Text/notes sync (one-way Logseq → Reminders) ────────────────
             let childTitles = try await logseq.fetchChildTitles(blockUUID: uuid)
             let (newTitle, newNotes) = try await buildTitleAndNotes(
-                blockTitle: block.title, childTitles: childTitles
-            )
+                blockTitle: block.title, childTitles: childTitles)
             let notesHash = Mapper.hashNotes(newNotes)
             if newTitle != updated.lastTitle || notesHash != updated.lastNotesHash {
                 try? await reminders.updateReminder(
-                    localId: pair.reminderLocalId,
-                    title: newTitle,
-                    notes: newNotes
-                )
-                if let fresh = await reminders.fetchSnapshot(localId: pair.reminderLocalId) {
-                    updated.lastReminderMod = fresh.lastModified.map { ms($0) }
-                }
+                    localId: updated.reminderLocalId, title: newTitle, notes: newNotes)
                 updated.lastTitle = newTitle
                 updated.lastNotesHash = notesHash
+                // Don't update lastReminderMod from a text write — the pre-write live
+                // stays as the conflict operand for date/priority on this pass.
             }
 
-            // ── Date 3-way merge (independent of status merge) ───────────────
+            // ── Date merge (uses pre-write live for timestamp operand) ────────
             if config.syncDates {
-                updated = try await mergeDates(updated: updated, block: block, live: live)
+                updated = try await mergeDates(
+                    updated: updated, block: block, live: live,
+                    preWriteReminderMs: preWriteReminderMs)
             }
 
-            // ── Priority 3-way merge (independent of status/date merges) ────
-            if config.syncPriority {
-                updated = try await mergePriority(updated: updated, block: block, live: live)
-            }
+            // Priority merge already ran above (F.2.4); just ensure baseline updated.
+            // (mergePriority mutates updated.lastPriority in place when not .appleCleared)
 
             state.pairs[i] = updated
         }
 
         state.pairs.removeAll { pairsToRemove.contains($0.logseqUUID) }
 
-        // ── Step 6: Mirror new Doing tasks ────────────────────────────────────
-        let pairedUUIDs = Set(state.pairs.map { $0.logseqUUID })
-        for mirrorBlock in doingTasks where !pairedUUIDs.contains(mirrorBlock.uuid) {
+        // ── Step 6: Mirror new open+prioritized tasks ─────────────────────────
+        // Skip Done and Canceled at creation (requirement 5).
+        // Note: logseqStatusIsCompleted only covers Done now; Canceled is an open
+        // status but must also be excluded from creation — only the four open-and-mirrored
+        // statuses (Backlog/Todo/Doing/In Review) should spawn new reminders.
+        // Also exclude pairsToRemove so an appleCleared teardown in this same pass
+        // doesn't immediately re-create the reminder with the stale Logseq snapshot.
+        let pairedUUIDs = Set(state.pairs.map { $0.logseqUUID }).union(pairsToRemove)
+        for mirrorBlock in prioritizedTasks where !pairedUUIDs.contains(mirrorBlock.uuid) {
+            guard let blockStatus = mirrorBlock.status else { continue }
+            guard LogseqStatus(rawTitle: blockStatus)?.isOpen == true else { continue }  // skip Done/Canceled
+            guard let targetListId = config.listId(forStatus: blockStatus) else {
+                logger.log("WARN: No list for status '\(blockStatus)' — skipping mirror of \(mirrorBlock.uuid.prefix(8))…")
+                continue
+            }
+            guard mirrorBlock.priority?.forSync != nil else { continue }  // gate: syncable priority
+
             logger.log("Mirroring \(mirrorBlock.uuid.prefix(8))…: \(mirrorBlock.title.prefix(60))")
             let childTitles = try await logseq.fetchChildTitles(blockUUID: mirrorBlock.uuid)
             let (title, notes) = try await buildTitleAndNotes(
-                blockTitle: mirrorBlock.title, childTitles: childTitles
-            )
+                blockTitle: mirrorBlock.title, childTitles: childTitles)
             let hash = Mapper.hashNotes(notes)
             let dueDateMs = (mirrorBlock.deadline ?? mirrorBlock.scheduled).map { Int64($0) }
             let dueSource = Mapper.preferredDateField(
                 deadline: mirrorBlock.deadline, scheduled: mirrorBlock.scheduled)
             let dueComponents: DateComponents? = config.syncDates ? dueDateMs.map {
-                Mapper.epochMsToDueComponents($0)
-            } : nil
-            // Priority: gated entirely on syncPriority so the toggle fully suppresses
-            // priority traffic — both the EventKit write and the seeded baseline.
+                Mapper.epochMsToDueComponents($0) } : nil
             let logseqPrio = mirrorBlock.priority?.forSync
             let initialPriority = config.syncPriority
-                ? Mapper.logseqPriorityToReminder(logseqPrio)
-                : 0
+                ? Mapper.logseqPriorityToReminder(logseqPrio) : 0
             let snap = try await reminders.createReminder(
                 title: title, notes: notes, dueComponents: dueComponents,
-                priority: initialPriority)
+                priority: initialPriority, inListId: targetListId)
             await writeBacklink(localId: snap.localId, blockUUID: mirrorBlock.uuid)
             try await logseq.setReminderIdProperty(blockUUID: mirrorBlock.uuid, extId: snap.extId)
-            let status = mirrorBlock.status ?? "Doing"
             let pair = SyncPair(
                 logseqUUID: mirrorBlock.uuid,
                 reminderLocalId: snap.localId,
                 reminderExtId: snap.extId,
-                lastStatus: status,
-                lastOpenStatus: Mapper.logseqStatusIsCompleted(status) ? "Doing" : status,
+                lastStatus: blockStatus,
+                lastOpenStatus: blockStatus,
                 lastCompleted: snap.isCompleted,
                 lastLogseqUpdated: mirrorBlock.updatedAt,
                 lastReminderMod: snap.lastModified.map { ms($0) },
@@ -435,61 +489,87 @@ struct SyncEngine {
                 lastNotesHash: hash,
                 lastDueDateMs: config.syncDates ? dueDateMs : nil,
                 lastDueSource: config.syncDates ? dueSource : nil,
-                lastPriority: config.syncPriority ? logseqPrio : nil
-            )
+                lastPriority: config.syncPriority ? logseqPrio : nil)
             state.pairs.append(pair)
         }
 
-        // ── Step 7: Ingest fresh captures ─────────────────────────────────────
+        // ── Step 7: Adopt fresh reminders as mirror pairs ─────────────────────
+        // New model: a reminder created directly in one of the 5 managed lists
+        // becomes a live mirror pair (not a one-shot capture+complete).
         let knownCapExtIds = Set(state.captures.map { $0.reminderExtId })
         for (snap, cls) in classified {
             guard case .fresh = cls else { continue }
-            // Skip if already recorded in state
+            // Skip if already recorded in state (old captured-reminder-id path)
             if knownCapExtIds.contains(snap.extId) { continue }
-            // Skip if anchor block already created (partial ingest — just archive)
-            if captureUUIDForExtId[snap.extId] != nil {
-                logger.log("Resuming partial ingest: \(snap.title.prefix(60))")
-                if !snap.isCompleted { try await reminders.completeReminder(localId: snap.localId) }
-                continue
-            }
-            logger.log("Ingesting capture: \(snap.title.prefix(60))")
+            // Skip if reminder-id block already created (partial adopt — will rebuild next pass)
+            if blockUUIDForExtId[snap.extId] != nil { continue }
+            // Must be in a managed list
+            guard let statusForList = config.status(forListId: snap.listId) else { continue }
+
+            logger.log("Adopting new reminder as mirror: \(snap.title.prefix(60))")
             let journalPage = LogseqClient.journalPageName()
             let inboxUUID = try await logseq.findOrCreateInboxBlock(
-                journalPage: journalPage,
-                inboxTitle: config.journalInboxTitle
-            )
-            // Carry priority from the reminder to the new capture (Apple → Logseq).
-            // The reverse mapper never produces .low, so the captured priority is
-            // always a meaningful value when set.
-            let capturedPriority: LogseqPriority? = config.syncPriority
-                ? Mapper.reminderPriorityToLogseq(snap.priority)
-                : nil
+                journalPage: journalPage, inboxTitle: config.journalInboxTitle)
+
+            // Priority: carry from reminder; if none, default to Medium (Option 1).
+            let capturedPriority: LogseqPriority?
+            if config.syncPriority {
+                capturedPriority = Mapper.reminderPriorityToLogseq(snap.priority) ?? .medium
+            } else {
+                capturedPriority = nil
+            }
+
+            // Write reminder-id ATOMICALLY in the block creation upsert (not a separate call).
+            // Status matches the list the reminder was created in.
             let taskUUID = try await logseq.createCaptureTask(
                 inboxBlockUUID: inboxUUID,
                 title: snap.title,
-                capturedExtId: snap.extId,
-                priority: capturedPriority
-            )
-            // Carry the reminder's due date to Logseq as :scheduled (date-only
-            // direction; we use the captured extId anchor, not a SyncPair).
+                reminderExtId: snap.extId,
+                status: statusForList,
+                priority: capturedPriority)
+
+            // If reminder had no priority, also write Medium back to the reminder so
+            // both sides agree at pair seeding — preventing the next priority-merge
+            // from seeing "Apple cleared priority" and tearing the pair down.
+            var freshSnap = snap
+            if config.syncPriority && Mapper.reminderPriorityToLogseq(snap.priority) == nil {
+                try? await reminders.setPriority(
+                    localId: snap.localId, Mapper.logseqPriorityToReminder(.medium))
+                if let refetched = await reminders.fetchSnapshot(localId: snap.localId) {
+                    freshSnap = refetched   // seed lastReminderMod from post-write snapshot
+                }
+            }
+
             if config.syncDates, let dueMs = snap.dueComponents.flatMap({
-                Mapper.dueComponentsToEpochMs($0)
-            }) {
+                Mapper.dueComponentsToEpochMs($0) }) {
                 try? await logseq.setBlockDate(
                     blockUUID: taskUUID, field: .scheduled, epochMs: dueMs)
             }
-            // The Logseq-side captured-reminder-id property is the durable
-            // idempotency anchor. No footer needed on the reminder.
-            try await reminders.completeReminder(localId: snap.localId)
-            state.captures.append(CaptureRecord(
+
+            // Do NOT complete the source reminder — it stays as a live mirror.
+            await writeBacklink(localId: snap.localId, blockUUID: taskUUID)
+
+            // Seed full baseline so the next reconcile lands on .converged.
+            let dueDateMs = snap.dueComponents.flatMap { Mapper.dueComponentsToEpochMs($0) }
+            let seededPriority: LogseqPriority? = config.syncPriority ? (capturedPriority ?? .medium) : nil
+            let pair = SyncPair(
+                logseqUUID: taskUUID,
                 reminderLocalId: snap.localId,
                 reminderExtId: snap.extId,
-                journalBlockUUID: taskUUID
-            ))
+                lastStatus: statusForList,
+                lastOpenStatus: statusForList,
+                lastCompleted: false,
+                lastLogseqUpdated: 0,  // fresh block; will update on next pass
+                lastReminderMod: freshSnap.lastModified.map { ms($0) },
+                lastTitle: snap.title,
+                lastNotesHash: Mapper.hashNotes(""),
+                lastDueDateMs: config.syncDates ? dueDateMs : nil,
+                lastDueSource: config.syncDates ? .scheduled : nil,
+                lastPriority: config.syncPriority ? seededPriority?.forSync : nil)
+            state.pairs.append(pair)
         }
 
-        // Archive previously-ingested captures that weren't completed (crash recovery,
-        // or user manually un-completed an archived capture).
+        // Archive previously-ingested captures that weren't completed (crash recovery).
         for (snap, cls) in classified {
             guard case .alreadyIngested = cls, !snap.isCompleted else { continue }
             logger.log("Completing stale capture: \(snap.title.prefix(60))")
@@ -504,10 +584,6 @@ struct SyncEngine {
 
     // MARK: - Private helpers
 
-    /// Write the Logseq deep link into the reminder's Reminders.app URL field via
-    /// the private ReminderKit bridge. Detection signal is the bridge's return BOOL.
-    /// Logs loudly on `.failed` — that means the private API may have changed (macOS
-    /// update?). See ReminderKitBridge.m for the full symbol inventory and repair guide.
     private func writeBacklink(localId: String, blockUUID: String) async {
         guard let backlink = Mapper.logseqDeepLink(graph: config.graph, blockUUID: blockUUID) else {
             logger.log("WARN: could not build backlink URL for \(blockUUID.prefix(8))…")
@@ -516,29 +592,21 @@ struct SyncEngine {
         if await reminders.setURLAttachment(localId: localId, url: backlink) == .failed {
             logger.log(
                 "WARN: backlink not written for \(blockUUID.prefix(8))… " +
-                "— REMURLAttachment save returned failure (private ReminderKit API may have changed," +
-                " or the save was rejected). See ReminderKitBridge.m"
+                "— REMURLAttachment save returned failure. See ReminderKitBridge.m"
             )
         }
     }
 
-    /// Build the reminder title and notes for a Logseq block, applying the full
-    /// transformation pipeline: resolve `[[uuid]]` page-refs → strip Logseq
-    /// markup → strip remaining markdown → append `#lsq` tag to title.
     private func buildTitleAndNotes(
         blockTitle: String,
         childTitles: [String]
     ) async throws -> (title: String, notes: String) {
-        var uuids: [String] = Mapper.extractPageRefUUIDs(blockTitle)
-        for child in childTitles {
-            uuids.append(contentsOf: Mapper.extractPageRefUUIDs(child))
-        }
+        var uuids = Mapper.extractPageRefUUIDs(blockTitle)
+        for child in childTitles { uuids.append(contentsOf: Mapper.extractPageRefUUIDs(child)) }
         let pageTitles = try await logseq.resolvePageTitles(uuids: uuids)
-
         let title = Mapper.plainText(blockTitle, pageTitles: pageTitles)
         let plainChildren = childTitles.map { Mapper.plainText($0, pageTitles: pageTitles) }
         let notes = Mapper.buildNotesString(childTitlesPlainText: plainChildren)
-
         return (title, notes)
     }
 
@@ -548,10 +616,14 @@ struct SyncEngine {
 
     // MARK: - Date 3-way merge
 
+    /// `preWriteReminderMs` is captured before any reminder write this pass.
+    /// The date merge uses it (not a post-write re-fetched value) so a same-pass
+    /// status write doesn't contaminate the date conflict tie-break.
     private mutating func mergeDates(
         updated: SyncPair,
         block: LogseqBlock,
-        live: ReminderSnapshot
+        live: ReminderSnapshot,
+        preWriteReminderMs: Int64?
     ) async throws -> SyncPair {
         var updated = updated
         let logseqDueMs  = (block.deadline ?? block.scheduled).map { Int64($0) }
@@ -559,16 +631,13 @@ struct SyncEngine {
                                                      scheduled: block.scheduled)
         let reminderDueMs = live.dueComponents.flatMap { Mapper.dueComponentsToEpochMs($0) }
 
-        // Initial observation after upgrade: both fields may be unset on the pair.
-        // Write nothing; just record the current values as baseline.
         if updated.lastDueDateMs == nil {
             let baseline = logseqDueMs ?? reminderDueMs
             if let b = baseline {
                 if let l = logseqDueMs, let r = reminderDueMs, l != r {
                     logger.log(
                         "Initial-upgrade date divergence for \(updated.logseqUUID.prefix(8))…" +
-                        " — Logseq \(l), Reminder \(r) — both kept; next edit will resolve"
-                    )
+                        " — Logseq \(l), Reminder \(r) — both kept; next edit will resolve")
                 }
                 updated.lastDueDateMs = b
                 updated.lastDueSource = logseqField
@@ -580,55 +649,43 @@ struct SyncEngine {
         let reminderDateChanged = reminderDueMs != updated.lastDueDateMs
 
         switch (logseqDateChanged, reminderDateChanged) {
-        case (false, false):
-            break  // no-op
+        case (false, false): break
 
         case (true, false):
-            // Logseq changed → push to Reminders
-            let logseqMs = block.updatedAt
             logger.log("Date Logseq→Reminders for \(updated.logseqUUID.prefix(8))…")
             if let newMs = logseqDueMs {
                 try await reminders.setDueComponents(
-                    localId: updated.reminderLocalId,
-                    Mapper.epochMsToDueComponents(newMs))
+                    localId: updated.reminderLocalId, Mapper.epochMsToDueComponents(newMs))
             } else {
                 try await reminders.clearDueComponents(localId: updated.reminderLocalId)
             }
             updated.lastDueDateMs = logseqDueMs
             updated.lastDueSource = logseqField
-            _ = logseqMs
 
         case (false, true):
-            // Reminders changed → push to Logseq
             let source = updated.lastDueSource ?? .scheduled
             logger.log("Date Reminders→Logseq for \(updated.logseqUUID.prefix(8))… field=\(source.rawValue)")
             if let newMs = reminderDueMs {
                 try await logseq.setBlockDate(
                     blockUUID: updated.logseqUUID, field: source, epochMs: newMs)
-                // If writing to scheduled but block has a deadline, clear the deadline
-                // to avoid it masking the new value on the next pass.
                 if source == .scheduled && block.deadline != nil {
-                    try? await logseq.clearBlockDate(
-                        blockUUID: updated.logseqUUID, field: .deadline)
+                    try? await logseq.clearBlockDate(blockUUID: updated.logseqUUID, field: .deadline)
                     updated.lastDueSource = .scheduled
                 }
             } else {
-                try await logseq.clearBlockDate(
-                    blockUUID: updated.logseqUUID, field: source)
+                try await logseq.clearBlockDate(blockUUID: updated.logseqUUID, field: source)
             }
             updated.lastDueDateMs = reminderDueMs
             if reminderDueMs == nil { updated.lastDueSource = nil }
 
         case (true, true):
-            // Both changed — most-recent-wins
-            let logseqMs    = block.updatedAt
-            let reminderMs  = live.lastModified.map { ms($0) } ?? 0
+            let logseqMs   = block.updatedAt
+            let reminderMs = preWriteReminderMs ?? 0   // pre-write operand
             if logseqMs >= reminderMs {
                 logger.log("Date CONFLICT \(updated.logseqUUID.prefix(8))…: Logseq wins")
                 if let newMs = logseqDueMs {
                     try await reminders.setDueComponents(
-                        localId: updated.reminderLocalId,
-                        Mapper.epochMsToDueComponents(newMs))
+                        localId: updated.reminderLocalId, Mapper.epochMsToDueComponents(newMs))
                 } else {
                     try await reminders.clearDueComponents(localId: updated.reminderLocalId)
                 }
@@ -641,38 +698,45 @@ struct SyncEngine {
                     try await logseq.setBlockDate(
                         blockUUID: updated.logseqUUID, field: source, epochMs: newMs)
                 } else {
-                    try await logseq.clearBlockDate(
-                        blockUUID: updated.logseqUUID, field: source)
+                    try await logseq.clearBlockDate(blockUUID: updated.logseqUUID, field: source)
                 }
                 updated.lastDueDateMs = reminderDueMs
                 if reminderDueMs == nil { updated.lastDueSource = nil }
             }
         }
-
         return updated
     }
 
-    // MARK: - Priority 3-way merge
+    // MARK: - Priority 3-way merge (returns action enum)
 
-    /// Bidirectional priority merge. Reads through `updated.lastPriority` so the
-    /// status/date merges that ran before this one see their writes.
-    ///
-    /// Compares in Logseq enum space (Apple int → bucketed via
-    /// `reminderPriorityToLogseq`) so Apple's intra-bucket drift (e.g. 5 → 7)
-    /// doesn't fire spurious change signals. Ties fold into Logseq-wins, matching
-    /// the date merge — convergence-critical because we only have one state field.
+    enum PriorityMergeResult {
+        case noChange(SyncPair)
+        case pushedToApple(SyncPair)
+        case pushedToLogseq(SyncPair)
+        /// Apple cleared priority and won the conflict.
+        /// Caller must set Logseq to Low and delete+drop the pair.
+        case appleCleared(SyncPair)
+
+        var pair: SyncPair {
+            switch self {
+            case .noChange(let p), .pushedToApple(let p),
+                 .pushedToLogseq(let p), .appleCleared(let p): return p
+            }
+        }
+    }
+
     private mutating func mergePriority(
         updated: SyncPair,
         block: LogseqBlock,
-        live: ReminderSnapshot
-    ) async throws -> SyncPair {
+        live: ReminderSnapshot,
+        preWriteReminderMs: Int64?
+    ) async throws -> PriorityMergeResult {
         var updated = updated
         let logseqEffective = block.priority?.forSync
         let appleBucketed   = Mapper.reminderPriorityToLogseq(live.priority)
 
-        // Scope: nothing to do if both sides + history are at "no priority".
         if logseqEffective == nil && appleBucketed == nil && updated.lastPriority == nil {
-            return updated
+            return .noChange(updated)
         }
 
         let logseqChanged = logseqEffective != updated.lastPriority
@@ -680,48 +744,50 @@ struct SyncEngine {
 
         switch (logseqChanged, appleChanged) {
         case (false, false):
-            break  // no-op
+            return .noChange(updated)
 
         case (true, false):
-            // Logseq changed → push to Apple. Guard against no-op writes that
-            // would bump lastModifiedDate and feed spurious change signals into
-            // the status/date merges.
             let target = Mapper.logseqPriorityToReminder(logseqEffective)
             logger.log("Priority Logseq→Reminders for \(updated.logseqUUID.prefix(8))… target=\(target)")
             if target != live.priority {
                 try await reminders.setPriority(localId: updated.reminderLocalId, target)
             }
             updated.lastPriority = logseqEffective
+            return .pushedToApple(updated)
 
         case (false, true):
-            // Apple changed → push to Logseq.
             logger.log("Priority Reminders→Logseq for \(updated.logseqUUID.prefix(8))… bucket=\(appleBucketed?.rawValue ?? "none")")
+            if appleBucketed == nil {
+                // Apple cleared priority — signal teardown to caller.
+                return .appleCleared(updated)
+            }
             try await applyPriorityToLogseq(appleBucketed, blockUUID: updated.logseqUUID)
             updated.lastPriority = appleBucketed
+            return .pushedToLogseq(updated)
 
         case (true, true):
-            // Both changed — most-recent-wins. Tie folds into Logseq (>=),
-            // matching the date merge so the single state field stays convergent.
             let logseqMs   = block.updatedAt
-            let reminderMs = live.lastModified.map { ms($0) } ?? 0
-            let winner = logseqMs >= reminderMs ? "Logseq" : "Reminder"
-            logger.log("Priority CONFLICT \(updated.logseqUUID.prefix(8))…: \(winner) wins")
+            let reminderMs = preWriteReminderMs ?? 0   // pre-write operand
+            logger.log("Priority CONFLICT \(updated.logseqUUID.prefix(8))…: \(logseqMs >= reminderMs ? "Logseq" : "Reminder") wins")
             if logseqMs >= reminderMs {
                 let target = Mapper.logseqPriorityToReminder(logseqEffective)
                 if target != live.priority {
                     try await reminders.setPriority(localId: updated.reminderLocalId, target)
                 }
                 updated.lastPriority = logseqEffective
+                return .pushedToApple(updated)
             } else {
+                if appleBucketed == nil {
+                    // Apple wins AND Apple cleared priority → teardown.
+                    return .appleCleared(updated)
+                }
                 try await applyPriorityToLogseq(appleBucketed, blockUUID: updated.logseqUUID)
                 updated.lastPriority = appleBucketed
+                return .pushedToLogseq(updated)
             }
         }
-
-        return updated
     }
 
-    /// Push a bucketed `LogseqPriority?` to a Logseq block: sets if non-nil, clears if nil.
     private func applyPriorityToLogseq(_ priority: LogseqPriority?, blockUUID: String) async throws {
         if let p = priority {
             try await logseq.setBlockPriority(blockUUID: blockUUID, priority: p)
@@ -729,5 +795,4 @@ struct SyncEngine {
             try await logseq.clearBlockPriority(blockUUID: blockUUID)
         }
     }
-
 }

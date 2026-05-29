@@ -3,8 +3,8 @@ import SyncCore
 
 @main
 struct App {
-    // BUILD 19 (logseq backlink via private ReminderKit URL attachment)
-    static let buildVersion = "19"
+    // BUILD 21 (fix: skip Canceled at mirror creation; fix: pairedUUIDs includes torn-down pairs)
+    static let buildVersion = "21"
     static let appVersion = "0.1.0"
 
     static let cliPath = "/Users/niyaro/.local/bin/logseq"
@@ -71,14 +71,11 @@ struct App {
         let stateStore = StateStore(directory: configDir)
         let remindersStore = RemindersStore()
 
-        // Authorize Reminders
+        // Authorize and resolve Reminders lists
         logger.log("Authorizing Reminders access...")
         try await remindersStore.authorize()
-        logger.log("Resolving Reminders list '\(config.remindersListTitle)'...")
-        _ = try await remindersStore.resolveCalendar(
-            listId: config.remindersListId,
-            listTitle: config.remindersListTitle
-        )
+        logger.log("Resolving Reminders lists...")
+        try await remindersStore.resolveCalendars(config: config)
 
         // Bootstrap Logseq client
         logger.log("Bootstrapping Logseq client for graph '\(config.graph)'...")
@@ -114,10 +111,7 @@ struct App {
 
         let remindersStore = RemindersStore()
         try await remindersStore.authorize()
-        _ = try await remindersStore.resolveCalendar(
-            listId: config.remindersListId,
-            listTitle: config.remindersListTitle
-        )
+        try await remindersStore.resolveCalendars(config: config)
 
         let state = StateStore(directory: configDir).load()
         print("Backfilling Logseq backlinks for \(state.pairs.count) mirrored reminder(s)…")
@@ -149,18 +143,20 @@ struct App {
     static func dumpReminders(config: Config) async throws {
         let remindersStore = RemindersStore()
         try await remindersStore.authorize()
-        let resolvedId = try await remindersStore.resolveCalendar(
-            listId: config.remindersListId,
-            listTitle: config.remindersListTitle
-        )
+        try await remindersStore.resolveCalendars(config: config)
 
+        let managed = await remindersStore.managedCalendarTitles()
+        let managedIds = Set(config.managedListIds)
         let allLists = await remindersStore.allCalendars()
         print("All Reminders lists:")
         for list in allLists {
-            let marker = list.calendarIdentifier == resolvedId ? " ← configured" : ""
+            let marker = managedIds.contains(list.calendarIdentifier) ? " ← managed" : ""
             print("  \(list.title)\(marker)")
         }
-        print("\nMonitoring: '\(config.remindersListTitle)'")
+        print("\nManaged status lists:")
+        for (status, title) in managed.sorted(by: { $0.key < $1.key }) {
+            print("  \(status) → \(title)")
+        }
 
         let incomplete = try await remindersStore.fetchIncomplete()
         print("\nIncomplete reminders (\(incomplete.count)):")
@@ -188,11 +184,11 @@ struct App {
         print("  reminder-id          → \(client.propertyIdents?.reminderId ?? "(none)")")
         print("  captured-reminder-id → \(client.propertyIdents?.capturedReminderId ?? "(none)")")
 
-        let tasks = try await client.fetchDoingTasks()
-        print("\nDoing tasks (\(tasks.count)):")
+        let tasks = try await client.fetchPrioritizedTasks()
+        print("\nPrioritized tasks (Urgent/High/Medium) (\(tasks.count)):")
         for t in tasks {
             print("  [\(t.uuid.prefix(8))…] \(t.title)")
-            if let s = t.status { print("    status: \(s)") }
+            if let s = t.status { print("    status: \(s)") } else { print("    status: (none)") }
             print("    priority: \(t.priority?.rawValue ?? "(none)")")
         }
     }

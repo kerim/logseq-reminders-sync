@@ -12,7 +12,8 @@ enum URLAttachmentResult {
 
 actor RemindersStore {
     private let store = EKEventStore()
-    private var calendar: EKCalendar?
+    /// Keyed by Logseq status name ("Doing", "Todo", etc.)
+    private var calendars: [String: EKCalendar] = [:]
 
     // MARK: - Authorization
 
@@ -29,47 +30,70 @@ actor RemindersStore {
 
     // MARK: - Calendar / List resolution
 
-    func resolveCalendar(listId: String, listTitle: String) throws -> String {
-        let calendars = store.calendars(for: .reminder)
+    /// Resolve all five status→list entries from config. Throws a clear error if any
+    /// list ID cannot be found, so a mis-configured statusLists fails loudly.
+    func resolveCalendars(config: Config) throws {
+        let allCals = store.calendars(for: .reminder)
+        var resolved: [String: EKCalendar] = [:]
+        var missing: [String] = []
 
-        if !listId.isEmpty, let cal = calendars.first(where: { $0.calendarIdentifier == listId }) {
-            calendar = cal
-            return cal.calendarIdentifier
+        for (status, entry) in config.statusLists {
+            if let cal = allCals.first(where: { $0.calendarIdentifier == entry.id }) {
+                resolved[status] = cal
+            } else if let cal = allCals.first(where: { $0.title == entry.title }) {
+                resolved[status] = cal
+            } else {
+                missing.append("\(status) -> \"\(entry.title)\" (id: \(entry.id))")
+            }
         }
 
-        guard let cal = calendars.first(where: { $0.title == listTitle }) else {
-            throw RemindersError.calendarNotFound(listTitle)
+        if !missing.isEmpty {
+            throw RemindersError.listsNotFound(
+                "statusLists entries not found in Reminders:\n" +
+                missing.map { "  • \($0)" }.joined(separator: "\n") +
+                "\nUpdate statusLists in ~/.logseq-reminders-sync/config.json with the correct IDs."
+            )
         }
-        calendar = cal
-        return cal.calendarIdentifier
+        calendars = resolved
     }
 
+    /// All reminder calendars (for diagnostic --dump-reminders).
     func allCalendars() -> [(title: String, calendarIdentifier: String)] {
         store.calendars(for: .reminder).map { ($0.title, $0.calendarIdentifier) }
     }
 
-    // MARK: - Fetching
+    /// The set of all managed calendar IDs (for diagnostic display).
+    func managedCalendarTitles() -> [String: String] {
+        Dictionary(uniqueKeysWithValues: calendars.map { ($0.key, $0.value.title) })
+    }
+
+    // MARK: - Fetching (strictly scoped to the 5 managed calendars)
 
     func fetchIncomplete() async throws -> [ReminderSnapshot] {
-        guard let cal = calendar else { throw RemindersError.calendarNotResolved }
+        let cals = resolvedCalendars()
         return try await fetch(predicate: store.predicateForIncompleteReminders(
-            withDueDateStarting: nil, ending: nil, calendars: [cal]
+            withDueDateStarting: nil, ending: nil, calendars: cals
         ))
     }
 
     func fetchCompleted(since: Date) async throws -> [ReminderSnapshot] {
-        guard let cal = calendar else { throw RemindersError.calendarNotResolved }
+        let cals = resolvedCalendars()
         return try await fetch(predicate: store.predicateForCompletedReminders(
-            withCompletionDateStarting: since, ending: nil, calendars: [cal]
+            withCompletionDateStarting: since, ending: nil, calendars: cals
         ))
     }
 
-    /// Fetch a single live reminder by localId. Returns nil if gone.
+    /// Fetch a single live reminder by localId. Store-wide (not scoped to managed lists)
+    /// so it can reconcile known pairs regardless of which list they're in.
     func fetchSnapshot(localId: String) -> ReminderSnapshot? {
         guard let item = store.calendarItem(withIdentifier: localId) as? EKReminder else {
             return nil
         }
         return Self.snapshot(from: item)
+    }
+
+    private func resolvedCalendars() -> [EKCalendar] {
+        Array(calendars.values)
     }
 
     private func fetch(predicate: NSPredicate) async throws -> [ReminderSnapshot] {
@@ -90,9 +114,12 @@ actor RemindersStore {
         title: String,
         notes: String,
         dueComponents: DateComponents?,
-        priority: Int = 0
+        priority: Int = 0,
+        inListId: String
     ) throws -> ReminderSnapshot {
-        guard let cal = calendar else { throw RemindersError.calendarNotResolved }
+        guard let cal = calendar(forListId: inListId) else {
+            throw RemindersError.calendarNotResolved
+        }
         let reminder = EKReminder(eventStore: store)
         reminder.calendar = cal
         reminder.title = title
@@ -103,20 +130,26 @@ actor RemindersStore {
         return Self.snapshot(from: reminder)
     }
 
+    /// Move a reminder to a different managed list by reassigning .calendar.
+    /// Returns the post-move snapshot so the engine reads the fresh localId/extId/lastModified
+    /// directly without re-fetching by a possibly-stale localId.
+    func moveReminder(localId: String, toListId: String) throws -> ReminderSnapshot? {
+        guard let item = store.calendarItem(withIdentifier: localId) as? EKReminder else {
+            return nil
+        }
+        guard item.calendar?.calendarIdentifier != toListId else {
+            return Self.snapshot(from: item)   // already in the right list, no-op
+        }
+        guard let targetCal = calendar(forListId: toListId) else {
+            throw RemindersError.calendarNotResolved
+        }
+        item.calendar = targetCal
+        try store.save(item, commit: true)
+        return Self.snapshot(from: item)
+    }
+
     /// Write the Logseq backlink into the REMURLAttachment that Reminders.app
     /// displays in its URL field (via the private ReminderKit framework).
-    ///
-    /// Returns a 3-state result:
-    /// - `.written`       — the attachment was written successfully
-    /// - `.alreadyCorrect` — the idempotency read matched; no write performed
-    /// - `.notFound`      — the reminder no longer exists (stale localId); skip quietly
-    /// - `.failed`        — `LRSWriteReminderURLAttachment` returned NO; the caller
-    ///                      MUST log this loudly (private API may have changed)
-    ///
-    /// Detection signal: the bridge write's BOOL (returned by `saveSynchronouslyWithError:`
-    /// / guard misses), NOT a post-write read-back. The read-back here is only a
-    /// best-effort idempotency skip — a mismatch causes a harmless redundant write,
-    /// never a spurious `.failed`.
     @discardableResult
     func setURLAttachment(localId: String, url: URL?) -> URLAttachmentResult {
         guard let item = store.calendarItem(withIdentifier: localId) as? EKReminder else {
@@ -148,29 +181,24 @@ actor RemindersStore {
         return Self.snapshot(from: item)
     }
 
-    /// Explicitly set a due date. Separate from updateReminder so nil can't be
-    /// misread as "leave unchanged."
     func setDueComponents(localId: String, _ components: DateComponents) throws {
         guard let item = store.calendarItem(withIdentifier: localId) as? EKReminder else { return }
         item.dueDateComponents = components
         try store.save(item, commit: true)
     }
 
-    /// Explicitly clear a due date. Treats "not found" as success.
     func clearDueComponents(localId: String) throws {
         guard let item = store.calendarItem(withIdentifier: localId) as? EKReminder else { return }
         item.dueDateComponents = nil
         try store.save(item, commit: true)
     }
 
-    /// Explicitly set priority. Pass 0 to clear. Treats "not found" as success.
     func setPriority(localId: String, _ priority: Int) throws {
         guard let item = store.calendarItem(withIdentifier: localId) as? EKReminder else { return }
         item.priority = priority
         try store.save(item, commit: true)
     }
 
-    /// Complete a reminder by localId. Treats "not found" as success.
     func completeReminder(localId: String) throws {
         guard let item = store.calendarItem(withIdentifier: localId) as? EKReminder else { return }
         item.isCompleted = true
@@ -178,10 +206,23 @@ actor RemindersStore {
         try store.save(item, commit: true)
     }
 
-    /// Delete a reminder by localId. Treats "not found" as success.
+    func uncompleteReminder(localId: String) throws -> ReminderSnapshot? {
+        guard let item = store.calendarItem(withIdentifier: localId) as? EKReminder else { return nil }
+        item.isCompleted = false
+        item.completionDate = nil
+        try store.save(item, commit: true)
+        return Self.snapshot(from: item)
+    }
+
     func deleteReminder(localId: String) throws {
         guard let item = store.calendarItem(withIdentifier: localId) as? EKReminder else { return }
         try store.remove(item, commit: true)
+    }
+
+    // MARK: - Helpers
+
+    private func calendar(forListId listId: String) -> EKCalendar? {
+        calendars.values.first(where: { $0.calendarIdentifier == listId })
     }
 
     // MARK: - Snapshot construction (stays inside actor — EKReminder is non-Sendable)
@@ -190,6 +231,7 @@ actor RemindersStore {
         ReminderSnapshot(
             localId: reminder.calendarItemIdentifier,
             extId: reminder.calendarItemExternalIdentifier ?? "",
+            listId: reminder.calendar?.calendarIdentifier ?? "",
             title: reminder.title ?? "",
             notes: reminder.notes,
             isCompleted: reminder.isCompleted,
@@ -207,6 +249,7 @@ enum RemindersError: Error, LocalizedError {
     case accessDenied
     case unsupportedOS
     case calendarNotFound(String)
+    case listsNotFound(String)
     case calendarNotResolved
     case fetchFailed
     case reminderNotFound(String)
@@ -219,8 +262,10 @@ enum RemindersError: Error, LocalizedError {
             return "macOS 14+ is required."
         case .calendarNotFound(let name):
             return "Reminders list '\(name)' not found."
+        case .listsNotFound(let msg):
+            return msg
         case .calendarNotResolved:
-            return "Calendar not resolved — call resolveCalendar first."
+            return "Calendar not resolved — call resolveCalendars(config:) first."
         case .fetchFailed:
             return "EventKit fetch returned nil."
         case .reminderNotFound(let id):

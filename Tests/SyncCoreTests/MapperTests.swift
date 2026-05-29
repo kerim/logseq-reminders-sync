@@ -101,15 +101,96 @@ struct MapperTests {
         #expect(Mapper.logseqStatusIsCompleted("Done") == true)
     }
 
-    @Test func canceledIsCompleted() {
-        #expect(Mapper.logseqStatusIsCompleted("Canceled") == true)
-        #expect(Mapper.logseqStatusIsCompleted("Cancelled") == true)
+    @Test func canceledIsNowOpen() {
+        // Canceled/Cancelled are routed to the Cancelled list; only Done is completed.
+        #expect(Mapper.logseqStatusIsCompleted("Canceled") == false)
+        #expect(Mapper.logseqStatusIsCompleted("Cancelled") == false)
     }
 
     @Test func openStatusesNotCompleted() {
-        for status in ["Doing", "Todo", "Backlog", "In Review"] {
+        for status in ["Doing", "Todo", "Backlog", "In Review", "Canceled", "Cancelled"] {
             #expect(Mapper.logseqStatusIsCompleted(status) == false, "Expected \(status) to be open")
         }
+    }
+
+    // MARK: - statusMergeAction
+
+    @Test func mergeConvergedWhenBothAgree() {
+        let action = Mapper.statusMergeAction(
+            logseqStatus: "Doing", effectiveReminderStatus: "Doing",
+            lastStatus: "Todo", logseqMs: 100, reminderMs: 200, isRecurring: false)
+        #expect(action == .converged("Doing"))
+    }
+
+    @Test func mergeOnlyLogseqChanged() {
+        let action = Mapper.statusMergeAction(
+            logseqStatus: "Doing", effectiveReminderStatus: "Todo",
+            lastStatus: "Todo", logseqMs: 100, reminderMs: 50, isRecurring: false)
+        #expect(action == .pushToReminder("Doing"))
+    }
+
+    @Test func mergeOnlyReminderChanged() {
+        let action = Mapper.statusMergeAction(
+            logseqStatus: "Todo", effectiveReminderStatus: "Doing",
+            lastStatus: "Todo", logseqMs: 50, reminderMs: 100, isRecurring: false)
+        #expect(action == .pushToLogseq("Doing"))
+    }
+
+    @Test func mergeBothChangedLogseqWins() {
+        let action = Mapper.statusMergeAction(
+            logseqStatus: "Backlog", effectiveReminderStatus: "Doing",
+            lastStatus: "Todo", logseqMs: 200, reminderMs: 100, isRecurring: false)
+        #expect(action == .pushToReminder("Backlog"))
+    }
+
+    @Test func mergeBothChangedReminderWins() {
+        let action = Mapper.statusMergeAction(
+            logseqStatus: "Backlog", effectiveReminderStatus: "Doing",
+            lastStatus: "Todo", logseqMs: 100, reminderMs: 200, isRecurring: false)
+        #expect(action == .pushToLogseq("Doing"))
+    }
+
+    @Test func mergeTieFoldsToLogseqWins() {
+        // A tie must push to reminder (not a no-op), setting lastStatus = logseqStatus.
+        let action = Mapper.statusMergeAction(
+            logseqStatus: "Backlog", effectiveReminderStatus: "Doing",
+            lastStatus: "Todo", logseqMs: 100, reminderMs: 100, isRecurring: false)
+        #expect(action == .pushToReminder("Backlog"))
+    }
+
+    @Test func mergeTiePingPongPrevention() {
+        // After a tie, the caller sets lastStatus = logseqStatus ("Backlog").
+        // Next pass: logseqStatus="Backlog", effectiveReminderStatus="Backlog" (after write),
+        // lastStatus="Backlog" → same-value short-circuit → .converged.
+        let secondPass = Mapper.statusMergeAction(
+            logseqStatus: "Backlog", effectiveReminderStatus: "Backlog",
+            lastStatus: "Backlog", logseqMs: 100, reminderMs: 100, isRecurring: false)
+        #expect(secondPass == .converged("Backlog"))
+    }
+
+    @Test func mergeSameValueBothChangedConverges() {
+        // Both sides moved to "Doing" independently — must converge, no write.
+        let action = Mapper.statusMergeAction(
+            logseqStatus: "Doing", effectiveReminderStatus: "Doing",
+            lastStatus: "Todo", logseqMs: 200, reminderMs: 300, isRecurring: false)
+        #expect(action == .converged("Doing"))
+    }
+
+    @Test func mergeRecurringDoneDeferred() {
+        // Recurring reminder completed → reminder side is "Done"; engine should defer.
+        let action = Mapper.statusMergeAction(
+            logseqStatus: "Doing", effectiveReminderStatus: "Done",
+            lastStatus: "Doing", logseqMs: 50, reminderMs: 200, isRecurring: true)
+        #expect(action == .recurringDeferred)
+    }
+
+    @Test func mergeRecurringLogseqDoneProceeds() {
+        // Logseq-side Done on a recurring block proceeds (reminder still open).
+        // The F.2.2 pre-merge guard owns rotation; the merge must not stall here.
+        let action = Mapper.statusMergeAction(
+            logseqStatus: "Done", effectiveReminderStatus: "Doing",
+            lastStatus: "Doing", logseqMs: 200, reminderMs: 50, isRecurring: true)
+        #expect(action == .pushToReminder("Done"))
     }
 
     @Test func restoreDefaultsToDoing() {

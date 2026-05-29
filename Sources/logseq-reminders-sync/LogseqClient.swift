@@ -168,6 +168,111 @@ struct LogseqClient {
         }
     }
 
+    /// Fetch all tasks with priority Urgent, High, or Medium — regardless of status.
+    /// Returns every status (including Done and Canceled) so the engine can retain
+    /// still-prioritized closed tasks. Status is nil when absent (engine handles it
+    /// explicitly; never defaults to "Doing").
+    func fetchPrioritizedTasks() async throws -> [LogseqBlock] {
+        struct TaskMeta {
+            var title: String
+            var updatedAt: Int64
+            var status: String?
+            var deadline: Int?
+            var scheduled: Int?
+            var priority: LogseqPriority?
+        }
+
+        // Base: all blocks with priority ∈ {Urgent, High, Medium}, any status.
+        // Selection is by the priority ref alone, independent of status.
+        let baseRows = try await query("""
+            [:find ?uuid ?title ?updated ?prio-title
+             :where [?b :logseq.property/priority ?p] [?p :block/title ?prio-title]
+                    [(contains? #{"Urgent" "High" "Medium"} ?prio-title)]
+                    [?b :block/uuid ?uuid] [?b :block/title ?title]
+                    [?b :block/updated-at ?updated]]
+            """)
+
+        var byUUID: [String: TaskMeta] = [:]
+        if let rows = baseRows as? [[Any]] {
+            for row in rows {
+                guard let uuid = row[0] as? String,
+                      let title = row[1] as? String,
+                      let updated = jsonInt64(row[2]),
+                      let prioTitle = row[3] as? String else { continue }
+                let prio = LogseqPriority(rawValue: prioTitle)
+                byUUID[uuid] = TaskMeta(title: title, updatedAt: updated, priority: prio)
+            }
+        }
+
+        // Status for each prioritized block (may be absent for non-task blocks).
+        let statusRows = try await query("""
+            [:find ?uuid ?status-title
+             :where [?b :logseq.property/priority ?p] [?p :block/title ?pt]
+                    [(contains? #{"Urgent" "High" "Medium"} ?pt)]
+                    [?b :block/uuid ?uuid]
+                    [?b :logseq.property/status ?s] [?s :block/title ?status-title]]
+            """)
+        if let rows = statusRows as? [[Any]] {
+            for row in rows {
+                guard let uuid = row[0] as? String, let statusTitle = row[1] as? String,
+                      byUUID[uuid] != nil else { continue }
+                byUUID[uuid]!.status = statusTitle
+            }
+        }
+
+        // Deadlines
+        let deadlineRows = try await query("""
+            [:find ?uuid ?deadline
+             :where [?b :logseq.property/priority ?p] [?p :block/title ?pt]
+                    [(contains? #{"Urgent" "High" "Medium"} ?pt)]
+                    [?b :block/uuid ?uuid] [?b :logseq.property/deadline ?deadline]]
+            """)
+        if let rows = deadlineRows as? [[Any]] {
+            for row in rows {
+                guard let uuid = row[0] as? String, let d = row[1] as? Int,
+                      byUUID[uuid] != nil else { continue }
+                byUUID[uuid]!.deadline = d
+            }
+        }
+
+        // Scheduled
+        let scheduledRows = try await query("""
+            [:find ?uuid ?scheduled
+             :where [?b :logseq.property/priority ?p] [?p :block/title ?pt]
+                    [(contains? #{"Urgent" "High" "Medium"} ?pt)]
+                    [?b :block/uuid ?uuid] [?b :logseq.property/scheduled ?scheduled]]
+            """)
+        if let rows = scheduledRows as? [[Any]] {
+            for row in rows {
+                guard let uuid = row[0] as? String, let s = row[1] as? Int,
+                      byUUID[uuid] != nil else { continue }
+                byUUID[uuid]!.scheduled = s
+            }
+        }
+
+        // Recurrence flag
+        let recurRows = try await query("""
+            [:find ?uuid
+             :where [?b :logseq.property/priority ?p] [?p :block/title ?pt]
+                    [(contains? #{"Urgent" "High" "Medium"} ?pt)]
+                    [?b :block/uuid ?uuid] [?b :logseq.property.repeat/repeated? true]]
+            """)
+        var recurringUUIDs = Set<String>()
+        if let rows = recurRows as? [[Any]] {
+            for row in rows {
+                if let uuid = row[0] as? String { recurringUUIDs.insert(uuid) }
+            }
+        }
+
+        return byUUID.map { uuid, meta in
+            LogseqBlock(uuid: uuid, title: meta.title, updatedAt: meta.updatedAt,
+                        status: meta.status,   // nil if no status property (engine handles)
+                        deadline: meta.deadline, scheduled: meta.scheduled,
+                        isRecurring: recurringUUIDs.contains(uuid),
+                        priority: meta.priority)
+        }
+    }
+
     func fetchBlock(uuid: String) async throws -> LogseqBlock? {
         let existResult = try await query("""
             [:find ?uuid ?updated ?title
@@ -404,35 +509,46 @@ struct LogseqClient {
         return try await extractCreatedUUID(from: createResult, context: "inbox block")
     }
 
-    /// Create a capture task under the inbox block with captured-reminder-id set atomically.
+    /// Create a mirror-capture task under the inbox block.
+    ///
+    /// Writes `reminder-id` (NOT `captured-reminder-id`) atomically in the same upsert
+    /// that creates the block, so a crash between this and the promote cannot leave
+    /// an orphaned block with no anchor. The `.linkedRebuild` path recovers a crashed
+    /// half-create via `reminder-id`; without the atomic anchor it would see a
+    /// priority-less block and the F.2.3 teardown would delete the user's reminder.
+    ///
+    /// The promote (`upsert task`) is NOT silenced with `try?` — it must succeed so the
+    /// block has a status and priority, preventing a spurious priority-loss teardown.
+    ///
     /// Returns the new block UUID.
     func createCaptureTask(
         inboxBlockUUID: String,
         title: String,
-        capturedExtId: String,
+        reminderExtId: String,
+        status: String,
         priority: LogseqPriority? = nil
     ) async throws -> String {
         guard let idents = propertyIdents else { throw LogseqError.notBootstrapped }
-        // Use upsert block with content + properties (atomic).
+        // Atomic: block content + reminder-id in one upsert.
         let createResult = try await run([
             "upsert", "block", "-g", graph,
             "--target-uuid", inboxBlockUUID,
             "--content", title,
-            "--update-properties", "{:\(idents.capturedReminderId) \"\(capturedExtId)\"}",
+            "--update-properties", "{:\(idents.reminderId) \"\(reminderExtId)\"}",
             "--output", "json"
         ])
         let blockUUID = try await extractCreatedUUID(from: createResult, context: "capture task")
-        // Promote to a #Task node with Todo status (captures land in inbox for triage)
+        // Promote to a #Task node with the matching status. NOT try? — must succeed.
         var promoteArgs = [
             "upsert", "task", "-g", graph,
             "--uuid", blockUUID,
-            "--status", "Todo"
+            "--status", status
         ]
         if let priority {
             promoteArgs.append(contentsOf: ["--priority", priority.rawValue])
         }
         promoteArgs.append(contentsOf: ["--output", "json"])
-        _ = try? await run(promoteArgs)
+        _ = try await run(promoteArgs)
         return blockUUID
     }
 

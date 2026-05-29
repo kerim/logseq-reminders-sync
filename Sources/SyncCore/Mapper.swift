@@ -70,12 +70,95 @@ public enum Mapper {
 
     // MARK: - Status mapping
 
+    /// Only "Done" maps to the completed state in Reminders.
+    /// "Canceled"/"Cancelled" are now OPEN statuses routed to the Cancelled list.
     public static func logseqStatusIsCompleted(_ status: String) -> Bool {
-        status == "Done" || status == "Canceled" || status == "Cancelled"
+        status == "Done"
     }
 
     public static func openStatusToRestore(lastOpenStatus: String?) -> String {
         lastOpenStatus ?? "Doing"
+    }
+
+    // MARK: - Bidirectional status merge (pure — no EventKit, unit-testable)
+
+    public enum StatusMergeAction: Equatable {
+        /// Both sides agree; write winning status to baseline.
+        case converged(String)
+        /// Push the given status to the reminder (complete or move list).
+        case pushToReminder(String)
+        /// Push the given status to Logseq.
+        case pushToLogseq(String)
+        /// Recurring-completed rotation — the F.2.2 pre-merge guard owns this;
+        /// only returned when isRecurring AND action would be pushToLogseq("Done").
+        case recurringDeferred
+    }
+
+    /// Determine what action to take for the status axis.
+    ///
+    /// - Parameters:
+    ///   - logseqStatus: Current Logseq block status (nil → log+skip, caller handles).
+    ///   - effectiveReminderStatus: `"Done"` if completed, else `Config.status(forListId:)`.
+    ///     Nil → log+skip, caller handles.
+    ///   - lastStatus: Baseline from the most recent sync.
+    ///   - logseqMs: Logseq block `updatedAt` epoch ms.
+    ///   - reminderMs: Reminder `lastModifiedDate` epoch ms (synthesized `now()` for
+    ///     list-moves when EventKit doesn't bump `lastModifiedDate`).
+    ///   - isRecurring: Whether the Logseq block has a recurrence rule.
+    public static func statusMergeAction(
+        logseqStatus: String,
+        effectiveReminderStatus: String,
+        lastStatus: String,
+        logseqMs: Int64,
+        reminderMs: Int64?,
+        isRecurring: Bool
+    ) -> StatusMergeAction {
+        // 1. Same-value short-circuit: both sides already agree (even if both differ
+        //    from baseline). Return converged so no write / move fires.
+        if logseqStatus == effectiveReminderStatus {
+            return .converged(logseqStatus)
+        }
+
+        let logseqChanged   = logseqStatus           != lastStatus
+        let reminderChanged = effectiveReminderStatus != lastStatus
+
+        switch (logseqChanged, reminderChanged) {
+        case (false, false):
+            // Shouldn't reach here (both equal lastStatus but not each other), but
+            // treat as converged defensively.
+            return .converged(lastStatus)
+
+        case (true, false):
+            // Only Logseq changed.
+            return .pushToReminder(logseqStatus)
+
+        case (false, true):
+            // Only reminder changed.
+            let action = StatusMergeAction.pushToLogseq(effectiveReminderStatus)
+            if isRecurring, effectiveReminderStatus == "Done" {
+                return .recurringDeferred
+            }
+            return action
+
+        case (true, true):
+            // Both changed. Most-recent-wins; tie → Logseq-wins.
+            // A tie MUST perform the pushToReminder write (not a no-op) so that
+            // lastStatus is set to logseqStatus and the next pass is .converged.
+            let reminderWins = reminderMs.map { $0 > logseqMs } ?? false
+            let winner = reminderWins ? effectiveReminderStatus : logseqStatus
+            let loser  = reminderWins ? logseqStatus : effectiveReminderStatus
+
+            _ = loser  // suppress warning — winner is what matters
+
+            if reminderWins {
+                let action = StatusMergeAction.pushToLogseq(winner)
+                if isRecurring, winner == "Done" { return .recurringDeferred }
+                return action
+            } else {
+                // Logseq wins (or tie)
+                return .pushToReminder(winner)
+            }
+        }
     }
 
     // MARK: - Notes building

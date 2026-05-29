@@ -2,26 +2,72 @@ import Testing
 import Foundation
 @testable import SyncCore
 
+// Minimal valid statusLists JSON block reused across tests.
+private let statusListsJSON = """
+"statusLists": {
+    "Backlog":   {"id": "id-backlog",   "title": "Backlog (Logseq)"},
+    "Todo":      {"id": "id-todo",      "title": "Todo (Logseq)"},
+    "Doing":     {"id": "id-doing",     "title": "Doing (Logseq)"},
+    "In Review": {"id": "id-inreview",  "title": "In-Review (Logseq)"},
+    "Canceled":  {"id": "id-cancelled", "title": "Cancelled (Logseq)"}
+}
+"""
+
 @Suite("Config")
 struct ConfigTests {
+
+    @Test("Config decodes statusLists and routing helpers work")
+    func decodesStatusListsAndRoutes() throws {
+        let json = """
+        {
+            "graph": "test",
+            \(statusListsJSON),
+            "journalInboxTitle": "📥 Inbox",
+            "fallbackInboxPage": "Inbox",
+            "conflictPolicy": "mostRecentWins"
+        }
+        """
+        let config = try JSONDecoder().decode(Config.self, from: Data(json.utf8))
+        #expect(config.statusLists.count == 5)
+        #expect(config.listId(forStatus: "Doing") == "id-doing")
+        #expect(config.listId(forStatus: "Canceled") == "id-cancelled")
+        #expect(config.listId(forStatus: "Done") == nil)
+        #expect(config.status(forListId: "id-backlog") == "Backlog")
+        #expect(config.status(forListId: "id-cancelled") == "Canceled")
+        #expect(config.status(forListId: "unknown-id") == nil)
+    }
+
+    @Test("Config managedListIds contains all five list IDs")
+    func managedListIds() throws {
+        let json = """
+        {
+            "graph": "test",
+            \(statusListsJSON),
+            "journalInboxTitle": "📥 Inbox",
+            "fallbackInboxPage": "Inbox",
+            "conflictPolicy": "mostRecentWins"
+        }
+        """
+        let config = try JSONDecoder().decode(Config.self, from: Data(json.utf8))
+        let ids = config.managedListIds
+        #expect(ids.count == 5)
+        #expect(ids.contains("id-doing"))
+        #expect(ids.contains("id-cancelled"))
+    }
+
     @Test("Config decodes legacy syncDeadlines key")
     func decodesLegacySyncDeadlines() throws {
         let json = """
         {
             "graph": "reminders-test",
-            "remindersListId": "list-id-123",
-            "remindersListTitle": "Logseq",
+            \(statusListsJSON),
             "journalInboxTitle": "📥 Inbox",
             "fallbackInboxPage": "Inbox",
             "conflictPolicy": "mostRecentWins",
-            "filterQueryFile": "filter.datalog",
             "syncDeadlines": true
         }
         """
-
         let config = try JSONDecoder().decode(Config.self, from: Data(json.utf8))
-        #expect(config.graph == "reminders-test")
-        #expect(config.remindersListTitle == "Logseq")
         #expect(config.syncDates == true)
     }
 
@@ -30,16 +76,13 @@ struct ConfigTests {
         let json = """
         {
             "graph": "my-graph",
-            "remindersListId": "",
-            "remindersListTitle": "Tasks",
+            \(statusListsJSON),
             "journalInboxTitle": "📥 Inbox",
             "fallbackInboxPage": "Inbox",
             "conflictPolicy": "mostRecentWins",
-            "filterQueryFile": "",
             "syncDates": true
         }
         """
-
         let config = try JSONDecoder().decode(Config.self, from: Data(json.utf8))
         #expect(config.syncDates == true)
     }
@@ -49,15 +92,12 @@ struct ConfigTests {
         let json = """
         {
             "graph": "my-graph",
-            "remindersListId": "",
-            "remindersListTitle": "Tasks",
+            \(statusListsJSON),
             "journalInboxTitle": "📥 Inbox",
             "fallbackInboxPage": "Inbox",
-            "conflictPolicy": "mostRecentWins",
-            "filterQueryFile": ""
+            "conflictPolicy": "mostRecentWins"
         }
         """
-
         let config = try JSONDecoder().decode(Config.self, from: Data(json.utf8))
         #expect(config.syncDates == false)
     }
@@ -67,15 +107,12 @@ struct ConfigTests {
         let json = """
         {
             "graph": "my-graph",
-            "remindersListId": "",
-            "remindersListTitle": "Tasks",
+            \(statusListsJSON),
             "journalInboxTitle": "📥 Inbox",
             "fallbackInboxPage": "Inbox",
-            "conflictPolicy": "mostRecentWins",
-            "filterQueryFile": ""
+            "conflictPolicy": "mostRecentWins"
         }
         """
-
         let config = try JSONDecoder().decode(Config.self, from: Data(json.utf8))
         #expect(config.syncPriority == true)
     }
@@ -85,16 +122,13 @@ struct ConfigTests {
         let json = """
         {
             "graph": "my-graph",
-            "remindersListId": "",
-            "remindersListTitle": "Tasks",
+            \(statusListsJSON),
             "journalInboxTitle": "📥 Inbox",
             "fallbackInboxPage": "Inbox",
             "conflictPolicy": "mostRecentWins",
-            "filterQueryFile": "",
             "syncPriority": false
         }
         """
-
         let config = try JSONDecoder().decode(Config.self, from: Data(json.utf8))
         #expect(config.syncPriority == false)
     }

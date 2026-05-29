@@ -1,17 +1,40 @@
 import Foundation
 
 public struct Config: Codable {
+    public struct ListEntry: Codable, Sendable {
+        public let id: String
+        public let title: String
+        public init(id: String, title: String) { self.id = id; self.title = title }
+    }
+
     public let graph: String
-    public let remindersListId: String
-    public let remindersListTitle: String
+    /// Map from canonical Logseq status ("Doing", "Todo", etc.) to the corresponding
+    /// Reminders list. "Done" has no entry — completion is tracked by isCompleted.
+    public let statusLists: [String: ListEntry]
     public let journalInboxTitle: String
     public let fallbackInboxPage: String
     public let conflictPolicy: String
-    public let filterQueryFile: String
     /// Whether to sync due dates in both directions. Replaces `syncDeadlines`.
     public let syncDates: Bool
     /// Whether to sync task priority. Defaults to true (opt-out) for legacy configs.
     public let syncPriority: Bool
+
+    // MARK: - Status ↔ list routing (SyncCore-level, EventKit-free)
+
+    public func listId(forStatus status: String) -> String? {
+        statusLists[status]?.id
+    }
+
+    public func status(forListId listId: String) -> String? {
+        statusLists.first(where: { $0.value.id == listId })?.key
+    }
+
+    /// All managed calendar identifiers (for fetch scoping).
+    public var managedListIds: Set<String> {
+        Set(statusLists.values.map(\.id))
+    }
+
+    // MARK: - Static
 
     public static let configDir: URL = {
         FileManager.default.homeDirectoryForCurrentUser
@@ -24,24 +47,29 @@ public struct Config: Codable {
         return try JSONDecoder().decode(Config.self, from: data)
     }
 
-    // MARK: - Codable (backward-compat: accepts "syncDeadlines" as alias for "syncDates")
+    // MARK: - Codable (backward-compat: legacy single-list keys decode but don't populate statusLists)
 
     private enum CodingKeys: String, CodingKey {
-        case graph, remindersListId, remindersListTitle
-        case journalInboxTitle, fallbackInboxPage, conflictPolicy, filterQueryFile
+        case graph
+        case statusLists
+        case journalInboxTitle, fallbackInboxPage, conflictPolicy
         case syncDates
         case syncPriority
     }
 
+    private enum LegacyCodingKeys: String, CodingKey {
+        case syncDeadlines
+        // Accepted for backward-compat parse (silently ignored — user must migrate to statusLists)
+        case remindersListId, remindersListTitle, filterQueryFile
+    }
+
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        graph               = try c.decode(String.self, forKey: .graph)
-        remindersListId     = try c.decode(String.self, forKey: .remindersListId)
-        remindersListTitle  = try c.decode(String.self, forKey: .remindersListTitle)
-        journalInboxTitle   = try c.decode(String.self, forKey: .journalInboxTitle)
-        fallbackInboxPage   = try c.decode(String.self, forKey: .fallbackInboxPage)
-        conflictPolicy      = try c.decode(String.self, forKey: .conflictPolicy)
-        filterQueryFile     = try c.decode(String.self, forKey: .filterQueryFile)
+        graph             = try c.decode(String.self, forKey: .graph)
+        statusLists       = try c.decode([String: ListEntry].self, forKey: .statusLists)
+        journalInboxTitle = try c.decode(String.self, forKey: .journalInboxTitle)
+        fallbackInboxPage = try c.decode(String.self, forKey: .fallbackInboxPage)
+        conflictPolicy    = try c.decode(String.self, forKey: .conflictPolicy)
         // Accept both "syncDates" (new) and "syncDeadlines" (legacy key)
         if let v = try c.decodeIfPresent(Bool.self, forKey: .syncDates) {
             syncDates = v
@@ -54,18 +82,12 @@ public struct Config: Codable {
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(graph,              forKey: .graph)
-        try c.encode(remindersListId,    forKey: .remindersListId)
-        try c.encode(remindersListTitle, forKey: .remindersListTitle)
-        try c.encode(journalInboxTitle,  forKey: .journalInboxTitle)
-        try c.encode(fallbackInboxPage,  forKey: .fallbackInboxPage)
-        try c.encode(conflictPolicy,     forKey: .conflictPolicy)
-        try c.encode(filterQueryFile,    forKey: .filterQueryFile)
-        try c.encode(syncDates,          forKey: .syncDates)
-        try c.encode(syncPriority,       forKey: .syncPriority)
-    }
-
-    private enum LegacyCodingKeys: String, CodingKey {
-        case syncDeadlines
+        try c.encode(graph,             forKey: .graph)
+        try c.encode(statusLists,       forKey: .statusLists)
+        try c.encode(journalInboxTitle, forKey: .journalInboxTitle)
+        try c.encode(fallbackInboxPage, forKey: .fallbackInboxPage)
+        try c.encode(conflictPolicy,    forKey: .conflictPolicy)
+        try c.encode(syncDates,         forKey: .syncDates)
+        try c.encode(syncPriority,      forKey: .syncPriority)
     }
 }
