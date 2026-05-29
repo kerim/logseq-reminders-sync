@@ -1,7 +1,7 @@
 import Foundation
 
 public struct Config: Codable {
-    public struct ListEntry: Codable, Sendable {
+    public struct ListEntry: Codable, Sendable, Equatable {
         public let id: String
         public let title: String
         public init(id: String, title: String) { self.id = id; self.title = title }
@@ -22,6 +22,74 @@ public struct Config: Codable {
     /// the last run, regardless of change-signals. Backstop for graph-reimport tx
     /// resets and the bounded under-trigger windows. Defaults to 60.
     public let gateForceFullRunMinutes: Int
+    /// Absolute path to the `logseq` CLI binary. Written by `setup` so later runs —
+    /// especially the PATH-stripped launchd run — resolve it deterministically. When
+    /// nil, the executable falls back to `which logseq` / common locations.
+    public let logseqCliPath: String?
+
+    // MARK: - Construction
+
+    public init(
+        graph: String,
+        statusLists: [String: ListEntry],
+        journalInboxTitle: String,
+        fallbackInboxPage: String,
+        conflictPolicy: String,
+        syncDates: Bool,
+        syncPriority: Bool,
+        gateForceFullRunMinutes: Int,
+        logseqCliPath: String?
+    ) {
+        self.graph = graph
+        self.statusLists = statusLists
+        self.journalInboxTitle = journalInboxTitle
+        self.fallbackInboxPage = fallbackInboxPage
+        self.conflictPolicy = conflictPolicy
+        self.syncDates = syncDates
+        self.syncPriority = syncPriority
+        self.gateForceFullRunMinutes = gateForceFullRunMinutes
+        self.logseqCliPath = logseqCliPath
+    }
+
+    /// Copy with a different target graph, preserving every other field. Used by
+    /// `switch-graph` to flip the target without disturbing list mappings or toggles.
+    public func with(graph newGraph: String) -> Config {
+        Config(
+            graph: newGraph,
+            statusLists: statusLists,
+            journalInboxTitle: journalInboxTitle,
+            fallbackInboxPage: fallbackInboxPage,
+            conflictPolicy: conflictPolicy,
+            syncDates: syncDates,
+            syncPriority: syncPriority,
+            gateForceFullRunMinutes: gateForceFullRunMinutes,
+            logseqCliPath: logseqCliPath
+        )
+    }
+
+    /// The canonical Logseq statuses that each map to one managed Reminders list,
+    /// in display order. "Done" is intentionally absent — completion is a flag.
+    public static let managedStatuses = ["Backlog", "Todo", "Doing", "In Review", "Canceled"]
+
+    /// A fresh config with the standard defaults. `statusLists` is keyed by canonical
+    /// status name (NOT the list display titles).
+    public static func makeDefault(
+        graph: String,
+        statusLists: [String: ListEntry],
+        logseqCliPath: String?
+    ) -> Config {
+        Config(
+            graph: graph,
+            statusLists: statusLists,
+            journalInboxTitle: "Inbox",
+            fallbackInboxPage: "Inbox",
+            conflictPolicy: "mostRecentWins",
+            syncDates: false,
+            syncPriority: true,
+            gateForceFullRunMinutes: 60,
+            logseqCliPath: logseqCliPath
+        )
+    }
 
     // MARK: - Status ↔ list routing (SyncCore-level, EventKit-free)
 
@@ -51,6 +119,17 @@ public struct Config: Codable {
         return try JSONDecoder().decode(Config.self, from: data)
     }
 
+    /// Atomically write this config to `~/.logseq-reminders-sync/config.json`,
+    /// pretty-printed with sorted keys (creating the directory if needed).
+    public func save() throws {
+        try FileManager.default.createDirectory(at: Self.configDir, withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(self)
+        let url = Self.configDir.appendingPathComponent("config.json")
+        try data.write(to: url, options: .atomic)
+    }
+
     // MARK: - Codable (backward-compat: legacy single-list keys decode but don't populate statusLists)
 
     private enum CodingKeys: String, CodingKey {
@@ -60,6 +139,7 @@ public struct Config: Codable {
         case syncDates
         case syncPriority
         case gateForceFullRunMinutes
+        case logseqCliPath
     }
 
     private enum LegacyCodingKeys: String, CodingKey {
@@ -84,6 +164,7 @@ public struct Config: Codable {
         }
         syncPriority = (try? c.decodeIfPresent(Bool.self, forKey: .syncPriority)) ?? true
         gateForceFullRunMinutes = (try? c.decodeIfPresent(Int.self, forKey: .gateForceFullRunMinutes)) ?? 60
+        logseqCliPath = try c.decodeIfPresent(String.self, forKey: .logseqCliPath)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -96,5 +177,6 @@ public struct Config: Codable {
         try c.encode(syncDates,         forKey: .syncDates)
         try c.encode(syncPriority,      forKey: .syncPriority)
         try c.encode(gateForceFullRunMinutes, forKey: .gateForceFullRunMinutes)
+        try c.encodeIfPresent(logseqCliPath, forKey: .logseqCliPath)
     }
 }

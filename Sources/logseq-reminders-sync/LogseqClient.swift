@@ -70,6 +70,21 @@ struct LogseqClient {
         return ident
     }
 
+    // MARK: - Graph listing (for setup / switch-graph pickers)
+
+    /// List available Logseq graph names. Does not use `graph` (a throwaway client with
+    /// any graph value works). Parses the verified `data.graphs` envelope — note this
+    /// differs from the `data.result` envelope `query(_:)` parses.
+    func listGraphs() async throws -> [String] {
+        let result = try await run(["graph", "list", "--output", "json"])
+        guard let dict = result as? [String: Any],
+              let data = dict["data"] as? [String: Any],
+              let graphs = data["graphs"] as? [String] else {
+            throw LogseqError.unexpectedShape("graph list: \(String(describing: result).prefix(200))")
+        }
+        return graphs
+    }
+
     // MARK: - Reading tasks
 
     /// Fetch all tasks with priority Urgent, High, or Medium — regardless of status.
@@ -341,6 +356,47 @@ struct LogseqClient {
             "--update-properties", "{:\(ident) \(epochMs)}",
             "--output", "json"
         ])
+    }
+
+    /// Strip `reminder-id` and `captured-reminder-id` from every block in THIS client's
+    /// graph. The caller pins the client to the OLD graph (idents resolved against it via
+    /// `bootstrap()`), so this is `switch-graph`'s old-graph hygiene. Uses the proven
+    /// `--remove-properties` mechanism (same as `clearBlockDate`), never an unproven
+    /// `remove property` verb. Returns the number of property removals performed.
+    @discardableResult
+    func clearSyncProperties() async throws -> Int {
+        guard let idents = propertyIdents else { throw LogseqError.notBootstrapped }
+        let mirror = try await fetchAllBlocksWithReminderIds()
+        let captured = try await fetchAllBlocksWithCapturedIds()
+        var cleared = 0
+        // Best-effort per block: this is cosmetic old-graph hygiene (it doesn't affect
+        // new-graph convergence), so a single stale/deleted UUID must not abort the whole
+        // strip — and force a needless full switch-graph re-run.
+        for (uuid, _) in mirror {
+            do {
+                _ = try await run([
+                    "upsert", "block", "-g", graph, "--uuid", uuid,
+                    "--remove-properties", "[:\(idents.reminderId)]",
+                    "--output", "json"
+                ])
+                cleared += 1
+            } catch {
+                logger?.log("WARN: could not strip reminder-id from \(uuid.prefix(8))…: \(error.localizedDescription)")
+            }
+        }
+        for (uuid, _) in captured {
+            do {
+                _ = try await run([
+                    "upsert", "block", "-g", graph, "--uuid", uuid,
+                    "--remove-properties", "[:\(idents.capturedReminderId)]",
+                    "--output", "json"
+                ])
+                cleared += 1
+            } catch {
+                logger?.log("WARN: could not strip captured-reminder-id from \(uuid.prefix(8))…: \(error.localizedDescription)")
+            }
+        }
+        return cleared
     }
 
     func clearBlockDate(blockUUID: String, field: LogseqDateField) async throws {

@@ -62,6 +62,32 @@ actor RemindersStore {
         store.calendars(for: .reminder).map { ($0.title, $0.calendarIdentifier) }
     }
 
+    /// Find a reminder list by exact title, or create one with that title. Returns the
+    /// `calendarIdentifier` (a String) — `EKCalendar` never escapes the actor. Used by
+    /// `setup`. Idempotent: re-running reuses the same-named list instead of duplicating.
+    func findOrCreateList(title: String) throws -> String {
+        if let existing = store.calendars(for: .reminder).first(where: { $0.title == title }) {
+            return existing.calendarIdentifier
+        }
+        guard let source = reminderSource() else {
+            throw RemindersError.noReminderSource
+        }
+        let cal = EKCalendar(for: .reminder, eventStore: store)
+        cal.title = title
+        cal.source = source
+        try store.saveCalendar(cal, commit: true)
+        return cal.calendarIdentifier
+    }
+
+    /// Pick a source that can hold reminder lists: the one backing the default reminders
+    /// calendar, else a source with an existing writable reminder calendar, else a local
+    /// source, else any source.
+    private func reminderSource() -> EKSource? {
+        if let s = store.defaultCalendarForNewReminders()?.source { return s }
+        if let s = store.calendars(for: .reminder).first(where: { !$0.isImmutable })?.source { return s }
+        return store.sources.first(where: { $0.sourceType == .local }) ?? store.sources.first
+    }
+
     /// The set of all managed calendar IDs (for diagnostic display).
     func managedCalendarTitles() -> [String: String] {
         Dictionary(uniqueKeysWithValues: calendars.map { ($0.key, $0.value.title) })
@@ -243,6 +269,68 @@ actor RemindersStore {
         try store.remove(item, commit: true)
     }
 
+    /// Delete every reminder — incomplete AND completed, across an unbounded window — in
+    /// the five managed lists (the lists themselves are kept). Used by `switch-graph`'s
+    /// full clean. The continuation carries only `String` localIds (never the non-Sendable
+    /// `EKReminder`); removals are staged with `commit:false` on the actor and flushed once.
+    func emptyManagedLists(config: Config) async throws {
+        let cals = managedCalendars(config: config)
+        guard !cals.isEmpty else { return }
+        let ids = try await managedReminderLocalIds(cals)
+        var removedAny = false
+        do {
+            for id in ids {
+                if let item = store.calendarItem(withIdentifier: id) as? EKReminder {
+                    try store.remove(item, commit: false)
+                    removedAny = true
+                }
+            }
+            if removedAny { try store.commit() }
+        } catch {
+            // Discard any staged-but-uncommitted deletions so the store/actor is left
+            // in a clean state (the caller aborts before flipping config either way).
+            store.reset()
+            throw error
+        }
+    }
+
+    /// Count reminders (incomplete + completed, unbounded) still in the managed lists —
+    /// `switch-graph`'s post-empty verification read.
+    func countRemaining(inManagedLists config: Config) async throws -> Int {
+        let cals = managedCalendars(config: config)
+        guard !cals.isEmpty else { return 0 }
+        return try await managedReminderLocalIds(cals).count
+    }
+
+    private func managedCalendars(config: Config) -> [EKCalendar] {
+        store.calendars(for: .reminder).filter { config.managedListIds.contains($0.calendarIdentifier) }
+    }
+
+    /// All localIds (incomplete + completed, unbounded) across the given calendars.
+    private func managedReminderLocalIds(_ cals: [EKCalendar]) async throws -> [String] {
+        let incomplete = store.predicateForIncompleteReminders(
+            withDueDateStarting: nil, ending: nil, calendars: cals
+        )
+        let completed = store.predicateForCompletedReminders(
+            withCompletionDateStarting: nil, ending: nil, calendars: cals
+        )
+        let a = try await localIds(matching: incomplete)
+        let b = try await localIds(matching: completed)
+        return a + b
+    }
+
+    private func localIds(matching predicate: NSPredicate) async throws -> [String] {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<[String], Error>) in
+            store.fetchReminders(matching: predicate) { reminders in
+                guard let reminders else {
+                    continuation.resume(throwing: RemindersError.fetchFailed)
+                    return
+                }
+                continuation.resume(returning: reminders.map { $0.calendarItemIdentifier })
+            }
+        }
+    }
+
     // MARK: - Helpers
 
     private func calendar(forListId listId: String) -> EKCalendar? {
@@ -277,6 +365,7 @@ enum RemindersError: Error, LocalizedError {
     case calendarNotResolved
     case fetchFailed
     case reminderNotFound(String)
+    case noReminderSource
 
     var errorDescription: String? {
         switch self {
@@ -284,6 +373,9 @@ enum RemindersError: Error, LocalizedError {
             return "Reminders access denied. Grant Full Access in System Settings → Privacy → Reminders."
         case .unsupportedOS:
             return "macOS 14+ is required."
+        case .noReminderSource:
+            return "No Reminders account is available to hold new lists. Open Reminders.app and " +
+                   "make sure at least one account (iCloud or On My Mac) is enabled, then re-run setup."
         case .calendarNotFound(let name):
             return "Reminders list '\(name)' not found."
         case .listsNotFound(let msg):

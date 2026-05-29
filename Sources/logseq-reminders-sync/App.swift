@@ -3,11 +3,9 @@ import SyncCore
 
 @main
 struct App {
-    // BUILD 23 (lint fixes, simplify cleanup: removed dead fetchDoingTasks, SyncEngine cleanups)
-    static let buildVersion = "23"
+    // BUILD 26 (switch-graph tolerates deleted lists; setup allows re-setup when old graph is gone)
+    static let buildVersion = "26"
     static let appVersion = "0.1.0"
-
-    static let cliPath = "/Users/niyaro/.local/bin/logseq"
 
     static func main() async throws {
         let args = CommandLine.arguments.dropFirst()
@@ -23,7 +21,19 @@ struct App {
         }
 
         do {
+            // `setup` runs WITHOUT an existing config — it creates one. Handle it before
+            // Config.load() so a clean machine doesn't fail.
+            if args.contains("setup") || args.contains("--setup") {
+                try await Setup.run()
+                return
+            }
+
             let config = try Config.load()
+
+            if args.contains("switch-graph") || args.contains("--switch-graph") {
+                try await Setup.switchGraph(config: config)
+                return
+            }
 
             if args.contains("--dump-reminders") {
                 try await dumpReminders(config: config)
@@ -46,6 +56,46 @@ struct App {
             fputs("Error: \(error.localizedDescription)\n", stderr)
             exit(1)
         }
+    }
+
+    // MARK: - Logseq CLI path resolution
+
+    /// Resolve the absolute path to the `logseq` CLI, config-first so the PATH-stripped
+    /// launchd run is deterministic: `config.logseqCliPath` → `which logseq` → common
+    /// install locations. Throws if none resolve.
+    static func resolveCliPath(config: Config?) throws -> String {
+        let fm = FileManager.default
+        if let p = config?.logseqCliPath, !p.isEmpty, fm.isExecutableFile(atPath: p) {
+            return p
+        }
+        if let p = which("logseq") { return p }
+        let home = fm.homeDirectoryForCurrentUser.path
+        let candidates = [
+            "\(home)/.local/bin/logseq",
+            "/opt/homebrew/bin/logseq",
+            "/usr/local/bin/logseq"
+        ]
+        for c in candidates where fm.isExecutableFile(atPath: c) { return c }
+        throw CliError.logseqNotFound
+    }
+
+    /// Locate an executable on PATH via `/usr/bin/which`. Returns nil under a stripped
+    /// environment (e.g. launchd) — callers resolve from config first for that reason.
+    private static func which(_ name: String) -> String? {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/which")
+        p.arguments = [name]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = Pipe()
+        do { try p.run() } catch { return nil }
+        p.waitUntilExit()
+        guard p.terminationStatus == 0 else { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let path = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty,
+            FileManager.default.isExecutableFile(atPath: path) else { return nil }
+        return path
     }
 
     // MARK: - Sync
@@ -79,6 +129,7 @@ struct App {
 
         // Construct the Logseq client (struct init — no I/O). bootstrap() is deferred
         // to the run path so the gate's cheap probe doesn't pay ~7 CLI round-trips.
+        let cliPath = try resolveCliPath(config: config)
         var logseqClient = LogseqClient(cliPath: cliPath, graph: config.graph, logger: logger)
 
         // ── Smart-polling gate ────────────────────────────────────────────────
@@ -233,6 +284,7 @@ struct App {
     }
 
     static func dumpTasks(config: Config) async throws {
+        let cliPath = try resolveCliPath(config: config)
         var client = LogseqClient(cliPath: cliPath, graph: config.graph)
         try await client.bootstrap()
         print("Property idents:")
@@ -266,15 +318,22 @@ struct App {
         print("""
         logseq-reminders-sync \(Self.appVersion)
 
-        Usage: logseq-reminders-sync [options]
+        Usage: logseq-reminders-sync [command|options]
+
+        Commands:
+          setup              Interactive first-run setup: request Reminders access,
+                             pick a graph, create the 5 lists, write config, and
+                             optionally install the background sync agent
+          switch-graph       Point the tool at a different Logseq graph: empty the 5
+                             lists, strip sync markers from the old graph, reset state
 
         Options:
           --version, -v      Print version and exit
           --help, -h         Print this help and exit
           --once             Run a single sync and exit (default)
           --force            Bypass the change gate and run a full sync pass
-          --dump-reminders   List reminders in the configured list (diagnostic)
-          --dump-tasks       List Doing tasks in the configured graph (diagnostic)
+          --dump-reminders   List reminders in the configured lists (diagnostic)
+          --dump-tasks       List prioritized tasks in the configured graph (diagnostic)
           --backfill-links   Write the Logseq backlink into existing mirror
                              reminders' URL field (one-shot; writes, acquires lock)
 
@@ -282,5 +341,19 @@ struct App {
         State:  ~/.logseq-reminders-sync/state.json
         Logs:   ~/.logseq-reminders-sync/log/
         """)
+    }
+}
+
+// MARK: - Errors
+
+enum CliError: Error, LocalizedError {
+    case logseqNotFound
+
+    var errorDescription: String? {
+        switch self {
+        case .logseqNotFound:
+            return "Could not find the `logseq` CLI. Install it, ensure it's on your PATH, " +
+                   "or set \"logseqCliPath\" to its absolute path in ~/.logseq-reminders-sync/config.json."
+        }
     }
 }
