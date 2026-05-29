@@ -99,7 +99,7 @@ public struct SyncPair: Codable, Sendable {
         // dataCorrupted (decodeIfPresent doesn't swallow rawValue failures) and
         // tank the whole SyncPair decode. try? also swallows type-mismatch — accepted
         // as defense-in-depth since state.json is local and single-writer.
-        lastPriority      = (try? c.decodeIfPresent(LogseqPriority.self, forKey: .lastPriority)) ?? nil
+        lastPriority      = try? c.decodeIfPresent(LogseqPriority.self, forKey: .lastPriority)
     }
 
     public func encode(to encoder: Encoder) throws {

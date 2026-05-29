@@ -13,9 +13,17 @@ let package = Package(
             name: "SyncCore",
             path: "Sources/SyncCore"
         ),
+        .target(
+            name: "ReminderKitBridge",
+            path: "Sources/ReminderKitBridge",
+            publicHeadersPath: "include",
+            linkerSettings: [
+                .linkedFramework("EventKit")
+            ]
+        ),
         .executableTarget(
             name: "logseq-reminders-sync",
-            dependencies: ["SyncCore"],
+            dependencies: ["SyncCore", "ReminderKitBridge"],
             path: "Sources/logseq-reminders-sync",
             exclude: ["Info.plist"],
             linkerSettings: [

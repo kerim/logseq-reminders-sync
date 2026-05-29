@@ -5,7 +5,7 @@ import Foundation
 @Suite("SyncPairCodable")
 struct SyncPairCodableTests {
 
-    private let legacyJSON = """
+    private let legacyJSON = Data("""
     {
         "logseqUUID": "abc-123",
         "reminderLocalId": "local-1",
@@ -18,7 +18,7 @@ struct SyncPairCodableTests {
         "lastTitle": "Test task",
         "lastNotesHash": "deadbeef"
     }
-    """.data(using: .utf8)!
+    """.utf8)
 
     @Test("Decodes pre-upgrade state.json without new fields")
     func decodesLegacyPair() throws {
@@ -69,7 +69,7 @@ struct SyncPairCodableTests {
 
     @Test("SyncState containing legacy pairs decodes non-empty")
     func stateWithLegacyPairs() throws {
-        let stateJSON = """
+        let stateJSON = Data("""
         {
             "pairs": [
                 {
@@ -87,7 +87,7 @@ struct SyncPairCodableTests {
             "captures": [],
             "lastRunDate": null
         }
-        """.data(using: .utf8)!
+        """.utf8)
         let state = try JSONDecoder().decode(SyncState.self, from: stateJSON)
         #expect(state.pairs.count == 1)
         #expect(state.pairs[0].pendingRotation == false)
@@ -121,7 +121,7 @@ struct SyncPairCodableTests {
         // decode (`try c.decodeIfPresent`) would throw `dataCorrupted` and tank
         // the whole pair; we use `try?` to fall back to nil so state.json
         // self-heals on the next sync.
-        let strangeJSON = """
+        let strangeJSON = Data("""
         {
             "logseqUUID": "p-2",
             "reminderLocalId": "loc",
@@ -134,7 +134,7 @@ struct SyncPairCodableTests {
             "lastNotesHash": "h",
             "lastPriority": "Critical"
         }
-        """.data(using: .utf8)!
+        """.utf8)
         let pair = try JSONDecoder().decode(SyncPair.self, from: strangeJSON)
         #expect(pair.lastPriority == nil)
         #expect(pair.logseqUUID == "p-2")

@@ -86,6 +86,24 @@ public enum Mapper {
         childTitlesPlainText.joined(separator: "\n")
     }
 
+    // MARK: - Logseq deep link
+
+    /// Build a Logseq deep link to a block: `logseq://graph/<graph>?block-id=<uuid>`.
+    /// Opens the source task in the Logseq app (desktop and mobile) — used as the
+    /// reminder's URL so a synced reminder can jump back to its origin block.
+    ///
+    /// `URLComponents` percent-encodes the graph-name path segment (e.g. a space
+    /// becomes `%20`). Note: `/`, `?`, and `#` in a graph name are NOT path-encoded,
+    /// but those aren't valid Logseq graph names, so this is acceptable.
+    public static func logseqDeepLink(graph: String, blockUUID: String) -> URL? {
+        var comps = URLComponents()
+        comps.scheme = "logseq"
+        comps.host = "graph"
+        comps.path = "/" + graph          // leading "/" is required when host is set
+        comps.queryItems = [URLQueryItem(name: "block-id", value: blockUUID)]
+        return comps.url
+    }
+
     // MARK: - Back-compat extractors (recognize BUILD ≤8 footer formats)
 
     public static func extractMirrorUUID(from notes: String?) -> String? {
@@ -99,11 +117,9 @@ public enum Mapper {
     private static func extractFooterValue(key: String, from notes: String?) -> String? {
         guard let notes else { return nil }
         let prefix = "\(key): "
-        for line in notes.components(separatedBy: "\n") {
-            if line.hasPrefix(prefix) {
-                let val = String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
-                return val.isEmpty ? nil : val
-            }
+        for line in notes.components(separatedBy: "\n") where line.hasPrefix(prefix) {
+            let val = String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+            return val.isEmpty ? nil : val
         }
         return nil
     }

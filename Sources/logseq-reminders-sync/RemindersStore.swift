@@ -1,6 +1,14 @@
 import EventKit
 import Foundation
+import ReminderKitBridge
 import SyncCore
+
+enum URLAttachmentResult {
+    case written
+    case alreadyCorrect
+    case notFound
+    case failed
+}
 
 actor RemindersStore {
     private let store = EKEventStore()
@@ -93,6 +101,30 @@ actor RemindersStore {
         reminder.priority = priority
         try store.save(reminder, commit: true)
         return Self.snapshot(from: reminder)
+    }
+
+    /// Write the Logseq backlink into the REMURLAttachment that Reminders.app
+    /// displays in its URL field (via the private ReminderKit framework).
+    ///
+    /// Returns a 3-state result:
+    /// - `.written`       — the attachment was written successfully
+    /// - `.alreadyCorrect` — the idempotency read matched; no write performed
+    /// - `.notFound`      — the reminder no longer exists (stale localId); skip quietly
+    /// - `.failed`        — `LRSWriteReminderURLAttachment` returned NO; the caller
+    ///                      MUST log this loudly (private API may have changed)
+    ///
+    /// Detection signal: the bridge write's BOOL (returned by `saveSynchronouslyWithError:`
+    /// / guard misses), NOT a post-write read-back. The read-back here is only a
+    /// best-effort idempotency skip — a mismatch causes a harmless redundant write,
+    /// never a spurious `.failed`.
+    @discardableResult
+    func setURLAttachment(localId: String, url: URL?) -> URLAttachmentResult {
+        guard let item = store.calendarItem(withIdentifier: localId) as? EKReminder else {
+            return .notFound
+        }
+        let target = url?.absoluteString
+        if LRSReadReminderURLAttachment(item) == target { return .alreadyCorrect }
+        return LRSWriteReminderURLAttachment(item, target) ? .written : .failed
     }
 
     /// Update title/notes/completion. Pass nil to leave a field unchanged. Treats "not found" as success.

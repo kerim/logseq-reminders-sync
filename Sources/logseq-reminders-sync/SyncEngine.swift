@@ -63,6 +63,9 @@ struct SyncEngine {
                 linkedStatus[newUUID] = try await logseq.fetchBlock(uuid: newUUID)
                 linkedStatus.removeValue(forKey: pair.logseqUUID)
                 state.pairs[i].logseqUUID = newUUID
+                // The backlink embeds the old UUID — rewrite it so the reminder's
+                // URL field keeps opening the right block.
+                await writeBacklink(localId: pair.reminderLocalId, blockUUID: newUUID)
             }
         }
 
@@ -273,7 +276,6 @@ struct SyncEngine {
                 continue
             }
 
-
             // ── 3-way merge ──────────────────────────────────────────────────
             let logseqChanged = currentStatus != pair.lastStatus
             let reminderCompleted = live.isCompleted
@@ -417,6 +419,7 @@ struct SyncEngine {
             let snap = try await reminders.createReminder(
                 title: title, notes: notes, dueComponents: dueComponents,
                 priority: initialPriority)
+            await writeBacklink(localId: snap.localId, blockUUID: mirrorBlock.uuid)
             try await logseq.setReminderIdProperty(blockUUID: mirrorBlock.uuid, extId: snap.extId)
             let status = mirrorBlock.status ?? "Doing"
             let pair = SyncPair(
@@ -501,6 +504,24 @@ struct SyncEngine {
 
     // MARK: - Private helpers
 
+    /// Write the Logseq deep link into the reminder's Reminders.app URL field via
+    /// the private ReminderKit bridge. Detection signal is the bridge's return BOOL.
+    /// Logs loudly on `.failed` — that means the private API may have changed (macOS
+    /// update?). See ReminderKitBridge.m for the full symbol inventory and repair guide.
+    private func writeBacklink(localId: String, blockUUID: String) async {
+        guard let backlink = Mapper.logseqDeepLink(graph: config.graph, blockUUID: blockUUID) else {
+            logger.log("WARN: could not build backlink URL for \(blockUUID.prefix(8))…")
+            return
+        }
+        if await reminders.setURLAttachment(localId: localId, url: backlink) == .failed {
+            logger.log(
+                "WARN: backlink not written for \(blockUUID.prefix(8))… " +
+                "— REMURLAttachment save returned failure (private ReminderKit API may have changed," +
+                " or the save was rejected). See ReminderKitBridge.m"
+            )
+        }
+    }
+
     /// Build the reminder title and notes for a Logseq block, applying the full
     /// transformation pipeline: resolve `[[uuid]]` page-refs → strip Logseq
     /// markup → strip remaining markdown → append `#lsq` tag to title.
@@ -544,7 +565,10 @@ struct SyncEngine {
             let baseline = logseqDueMs ?? reminderDueMs
             if let b = baseline {
                 if let l = logseqDueMs, let r = reminderDueMs, l != r {
-                    logger.log("Initial-upgrade date divergence for \(updated.logseqUUID.prefix(8))… — Logseq \(l), Reminder \(r) — both kept; next edit will resolve")
+                    logger.log(
+                        "Initial-upgrade date divergence for \(updated.logseqUUID.prefix(8))…" +
+                        " — Logseq \(l), Reminder \(r) — both kept; next edit will resolve"
+                    )
                 }
                 updated.lastDueDateMs = b
                 updated.lastDueSource = logseqField
@@ -672,11 +696,7 @@ struct SyncEngine {
         case (false, true):
             // Apple changed → push to Logseq.
             logger.log("Priority Reminders→Logseq for \(updated.logseqUUID.prefix(8))… bucket=\(appleBucketed?.rawValue ?? "none")")
-            if let newPrio = appleBucketed {
-                try await logseq.setBlockPriority(blockUUID: updated.logseqUUID, priority: newPrio)
-            } else {
-                try await logseq.clearBlockPriority(blockUUID: updated.logseqUUID)
-            }
+            try await applyPriorityToLogseq(appleBucketed, blockUUID: updated.logseqUUID)
             updated.lastPriority = appleBucketed
 
         case (true, true):
@@ -684,13 +704,8 @@ struct SyncEngine {
             // matching the date merge so the single state field stays convergent.
             let logseqMs   = block.updatedAt
             let reminderMs = live.lastModified.map { ms($0) } ?? 0
-            if logseqMs == reminderMs {
-                logger.log("Priority CONFLICT TIE \(updated.logseqUUID.prefix(8))…: Logseq wins")
-            } else if logseqMs > reminderMs {
-                logger.log("Priority CONFLICT \(updated.logseqUUID.prefix(8))…: Logseq wins")
-            } else {
-                logger.log("Priority CONFLICT \(updated.logseqUUID.prefix(8))…: Reminder wins")
-            }
+            let winner = logseqMs >= reminderMs ? "Logseq" : "Reminder"
+            logger.log("Priority CONFLICT \(updated.logseqUUID.prefix(8))…: \(winner) wins")
             if logseqMs >= reminderMs {
                 let target = Mapper.logseqPriorityToReminder(logseqEffective)
                 if target != live.priority {
@@ -698,16 +713,21 @@ struct SyncEngine {
                 }
                 updated.lastPriority = logseqEffective
             } else {
-                if let newPrio = appleBucketed {
-                    try await logseq.setBlockPriority(blockUUID: updated.logseqUUID, priority: newPrio)
-                } else {
-                    try await logseq.clearBlockPriority(blockUUID: updated.logseqUUID)
-                }
+                try await applyPriorityToLogseq(appleBucketed, blockUUID: updated.logseqUUID)
                 updated.lastPriority = appleBucketed
             }
         }
 
         return updated
+    }
+
+    /// Push a bucketed `LogseqPriority?` to a Logseq block: sets if non-nil, clears if nil.
+    private func applyPriorityToLogseq(_ priority: LogseqPriority?, blockUUID: String) async throws {
+        if let p = priority {
+            try await logseq.setBlockPriority(blockUUID: blockUUID, priority: p)
+        } else {
+            try await logseq.clearBlockPriority(blockUUID: blockUUID)
+        }
     }
 
 }

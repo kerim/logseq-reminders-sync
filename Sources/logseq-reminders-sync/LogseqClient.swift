@@ -73,6 +73,14 @@ struct LogseqClient {
     // MARK: - Reading tasks
 
     func fetchDoingTasks() async throws -> [LogseqBlock] {
+        struct TaskMeta {
+            var title: String
+            var updatedAt: Int64
+            var deadline: Int?
+            var scheduled: Int?
+            var priority: LogseqPriority?
+        }
+
         // Base: all blocks with status=Doing, regardless of tag type
         let baseRows = try await query("""
             [:find ?uuid ?title ?updated
@@ -81,15 +89,13 @@ struct LogseqClient {
                     [?b :block/updated-at ?updated]]
             """)
 
-        var byUUID: [String: (title: String, updatedAt: Int64,
-                               deadline: Int?, scheduled: Int?,
-                               priority: LogseqPriority?)] = [:]
+        var byUUID: [String: TaskMeta] = [:]
         if let rows = baseRows as? [[Any]] {
             for row in rows {
                 guard let uuid = row[0] as? String,
                       let title = row[1] as? String,
                       let updated = jsonInt64(row[2]) else { continue }
-                byUUID[uuid] = (title, updated, nil, nil, nil)
+                byUUID[uuid] = TaskMeta(title: title, updatedAt: updated)
             }
         }
 

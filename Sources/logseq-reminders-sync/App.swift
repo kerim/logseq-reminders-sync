@@ -3,8 +3,8 @@ import SyncCore
 
 @main
 struct App {
-    // BUILD 17 (priority sync)
-    static let buildVersion = "17"
+    // BUILD 19 (logseq backlink via private ReminderKit URL attachment)
+    static let buildVersion = "19"
     static let appVersion = "0.1.0"
 
     static let cliPath = "/Users/niyaro/.local/bin/logseq"
@@ -32,6 +32,11 @@ struct App {
 
             if args.contains("--dump-tasks") {
                 try await dumpTasks(config: config)
+                return
+            }
+
+            if args.contains("--backfill-links") {
+                try await backfillLinks(config: config)
                 return
             }
 
@@ -89,6 +94,54 @@ struct App {
             logger: logger
         )
         try await engine.run()
+    }
+
+    // MARK: - Backfill
+
+    /// One-shot: write the Logseq backlink into the URL field of every already-paired
+    /// mirror reminder. For reminders created before build 18 (the create path and
+    /// reindex guard keep newer ones current). Writes to EventKit, so it acquires the
+    /// lockfile and authorizes — unlike the read-only `--dump-*` flags. Idempotent:
+    /// re-running touches nothing already correct.
+    static func backfillLinks(config: Config) async throws {
+        let configDir = Config.configDir
+
+        // Acquire the lockfile so this can't race a concurrent sync's EventKit writes.
+        let lockURL = configDir.appendingPathComponent("lock")
+        let lock = Lockfile(url: lockURL)
+        try lock.acquire()
+        defer { lock.release() }
+
+        let remindersStore = RemindersStore()
+        try await remindersStore.authorize()
+        _ = try await remindersStore.resolveCalendar(
+            listId: config.remindersListId,
+            listTitle: config.remindersListTitle
+        )
+
+        let state = StateStore(directory: configDir).load()
+        print("Backfilling Logseq backlinks for \(state.pairs.count) mirrored reminder(s)…")
+
+        var written = 0, alreadyCorrect = 0, failed = 0, missing = 0
+        for pair in state.pairs {
+            guard let link = Mapper.logseqDeepLink(graph: config.graph, blockUUID: pair.logseqUUID) else {
+                print("  WARN: could not build backlink for \(pair.logseqUUID.prefix(8))…")
+                missing += 1
+                continue
+            }
+            switch await remindersStore.setURLAttachment(localId: pair.reminderLocalId, url: link) {
+            case .written:       written += 1
+            case .alreadyCorrect: alreadyCorrect += 1
+            case .notFound:      missing += 1
+            case .failed:
+                failed += 1
+                print(
+                    "  WARN: backlink not written for \(pair.logseqUUID.prefix(8))…" +
+                    " — REMURLAttachment save returned failure. See ReminderKitBridge.m"
+                )
+            }
+        }
+        print("Done. \(written) written, \(alreadyCorrect) already current, \(failed) failed, \(missing) missing.")
     }
 
     // MARK: - Diagnostics
@@ -170,6 +223,8 @@ struct App {
           --once             Run a single sync and exit (default)
           --dump-reminders   List reminders in the configured list (diagnostic)
           --dump-tasks       List Doing tasks in the configured graph (diagnostic)
+          --backfill-links   Write the Logseq backlink into existing mirror
+                             reminders' URL field (one-shot; writes, acquires lock)
 
         Config: ~/.logseq-reminders-sync/config.json
         State:  ~/.logseq-reminders-sync/state.json

@@ -28,9 +28,10 @@ swift test --filter MapperTests.pageLinksUnwrapped  # single test
 
 ## Package layout
 
-Two SPM targets, deliberately split so the sync logic is unit-testable without EventKit:
+Three SPM targets:
 
 - **SyncCore** (library, `Sources/SyncCore/`) — pure data + transforms: `Config`, `SyncState`/`SyncPair`/`CaptureRecord`, `ReminderSnapshot`, `LogseqBlock`, `Mapper`, `StateStore`. No EventKit, no Process, no I/O beyond the state JSON file. This is what `Tests/SyncCoreTests/` exercises with Swift Testing.
+- **ReminderKitBridge** (Objective-C library, `Sources/ReminderKitBridge/`) — reaches Apple's private `ReminderKit` framework via runtime introspection to write/read the `REMURLAttachment` that Reminders.app displays in its URL field. The public `EKCalendarItem.url` is disconnected from that field (confirmed macOS 26). See the private-symbol inventory and repair guide at the top of `ReminderKitBridge.m`.
 - **logseq-reminders-sync** (executable, `Sources/logseq-reminders-sync/`) — everything that talks to the outside world: `App` (entry), `SyncEngine` (the 3-way merge), `LogseqClient` (shells out to the `logseq` CLI), `RemindersStore` (actor over `EKEventStore`), `Lockfile`, `RunLogger`. The Info.plist is embedded via `-sectcreate` linker flags so the CLI binary carries `NSRemindersFullAccessUsageDescription`.
 
 ## How the sync model works (the part that requires reading multiple files)
@@ -68,6 +69,10 @@ When debugging without mutating either side:
 - `--dump-tasks` — bootstraps the Logseq client, prints the resolved property idents, dumps Doing tasks.
 
 These are read-only and skip the lockfile / state writes — useful for verifying config and Logseq CLI connectivity.
+
+One maintenance flag *does* write:
+
+- `--backfill-links` — writes the Logseq backlink (`logseq://graph/<graph>?block-id=<uuid>`) into the Reminders.app URL field of every already-paired mirror reminder, via the private `ReminderKit` bridge (`RemindersStore.setURLAttachment`). For reminders created before build 19; newer ones get the link at creation time, and the reindex guard in `SyncEngine.run()` rewrites it when a block's UUID changes. Rebuilt pairs (Step 4.5) and pairs that left the Doing filter without a UUID change are not covered in-run — run `--backfill-links` after a state rebuild or upgrade. Unlike the `--dump-*` flags it acquires the lockfile and authorizes Reminders, but it does **not** write `state.json`. Reports four buckets: written / already current / failed / missing. Any `failed` count means the private API may have changed — see `ReminderKitBridge.m`.
 
 ## Conventions worth respecting
 

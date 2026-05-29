@@ -17,9 +17,9 @@ struct ConfigTests {
             "filterQueryFile": "filter.datalog",
             "syncDeadlines": true
         }
-        """.data(using: .utf8)!
+        """
 
-        let config = try JSONDecoder().decode(Config.self, from: json)
+        let config = try JSONDecoder().decode(Config.self, from: Data(json.utf8))
         #expect(config.graph == "reminders-test")
         #expect(config.remindersListTitle == "Logseq")
         #expect(config.syncDates == true)
@@ -38,9 +38,9 @@ struct ConfigTests {
             "filterQueryFile": "",
             "syncDates": true
         }
-        """.data(using: .utf8)!
+        """
 
-        let config = try JSONDecoder().decode(Config.self, from: json)
+        let config = try JSONDecoder().decode(Config.self, from: Data(json.utf8))
         #expect(config.syncDates == true)
     }
 
@@ -56,9 +56,9 @@ struct ConfigTests {
             "conflictPolicy": "mostRecentWins",
             "filterQueryFile": ""
         }
-        """.data(using: .utf8)!
+        """
 
-        let config = try JSONDecoder().decode(Config.self, from: json)
+        let config = try JSONDecoder().decode(Config.self, from: Data(json.utf8))
         #expect(config.syncDates == false)
     }
 
@@ -74,9 +74,9 @@ struct ConfigTests {
             "conflictPolicy": "mostRecentWins",
             "filterQueryFile": ""
         }
-        """.data(using: .utf8)!
+        """
 
-        let config = try JSONDecoder().decode(Config.self, from: json)
+        let config = try JSONDecoder().decode(Config.self, from: Data(json.utf8))
         #expect(config.syncPriority == true)
     }
 
@@ -93,9 +93,9 @@ struct ConfigTests {
             "filterQueryFile": "",
             "syncPriority": false
         }
-        """.data(using: .utf8)!
+        """
 
-        let config = try JSONDecoder().decode(Config.self, from: json)
+        let config = try JSONDecoder().decode(Config.self, from: Data(json.utf8))
         #expect(config.syncPriority == false)
     }
 }

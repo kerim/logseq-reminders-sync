@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import SyncCore
 
@@ -212,5 +213,34 @@ struct MapperTests {
         #expect(LogseqPriority.urgent.forSync == .urgent)
         #expect(LogseqPriority.high.forSync == .high)
         #expect(LogseqPriority.medium.forSync == .medium)
+    }
+
+    // MARK: - Logseq deep link
+
+    @Test func deepLinkSimpleGraph() {
+        let url = Mapper.logseqDeepLink(
+            graph: "reminders-test-10",
+            blockUUID: "6a16c3b1-d5a2-4092-9f7e-c3686bbe49d7")
+        #expect(url?.absoluteString
+            == "logseq://graph/reminders-test-10?block-id=6a16c3b1-d5a2-4092-9f7e-c3686bbe49d7")
+    }
+
+    @Test func deepLinkEncodesSpaceInGraphName() {
+        // The configured graph here has no spaces, so this is the only place the
+        // percent-encoding path is exercised: a space must become %20.
+        let url = Mapper.logseqDeepLink(
+            graph: "My Graph",
+            blockUUID: "6a16c3b1-d5a2-4092-9f7e-c3686bbe49d7")
+        #expect(url?.absoluteString
+            == "logseq://graph/My%20Graph?block-id=6a16c3b1-d5a2-4092-9f7e-c3686bbe49d7")
+    }
+
+    @Test func deepLinkQueryItemIsBlockId() {
+        let uuid = "6a16c3b1-d5a2-4092-9f7e-c3686bbe49d7"
+        let url = Mapper.logseqDeepLink(graph: "g", blockUUID: uuid)
+        let comps = URLComponents(url: url!, resolvingAgainstBaseURL: false)
+        let item = comps?.queryItems?.first
+        #expect(item?.name == "block-id")
+        #expect(item?.value == uuid)
     }
 }
