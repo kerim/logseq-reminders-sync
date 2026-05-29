@@ -1,5 +1,12 @@
 # Changelog
 
+## Build 29 — 2026-05-29
+
+### Changed
+- `syncDates` now defaults to **true**. Due dates sync both ways for all new setups. Existing configs with `"syncDates": false` are unaffected.
+
+---
+
 ## Build 28 — 2026-05-29
 
 ### Added

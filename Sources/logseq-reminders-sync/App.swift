@@ -3,8 +3,8 @@ import SyncCore
 
 @main
 struct App {
-    // BUILD 28 (configurable adopt destination: top-level journal vs named sub-block)
-    static let buildVersion = "28"
+    // BUILD 29 (syncDates default changed from false to true)
+    static let buildVersion = "29"
     static let appVersion = "0.1.0"
 
     static func main() async throws {

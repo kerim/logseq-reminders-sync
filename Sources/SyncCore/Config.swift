@@ -89,7 +89,7 @@ public struct Config: Codable {
             journalInboxTitle: journalInboxTitle,
             fallbackInboxPage: "Inbox",
             conflictPolicy: "mostRecentWins",
-            syncDates: false,
+            syncDates: true,
             syncPriority: true,
             gateForceFullRunMinutes: 60,
             logseqCliPath: logseqCliPath
@@ -166,7 +166,7 @@ public struct Config: Codable {
             syncDates = v
         } else {
             let legacy = try decoder.container(keyedBy: LegacyCodingKeys.self)
-            syncDates = (try? legacy.decode(Bool.self, forKey: .syncDeadlines)) ?? false
+            syncDates = (try? legacy.decode(Bool.self, forKey: .syncDeadlines)) ?? true
         }
         syncPriority = (try? c.decodeIfPresent(Bool.self, forKey: .syncPriority)) ?? true
         gateForceFullRunMinutes = (try? c.decodeIfPresent(Int.self, forKey: .gateForceFullRunMinutes)) ?? 60

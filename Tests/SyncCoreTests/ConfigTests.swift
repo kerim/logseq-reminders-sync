@@ -87,8 +87,8 @@ struct ConfigTests {
         #expect(config.syncDates == true)
     }
 
-    @Test("Config defaults syncDates to false when key absent")
-    func defaultsSyncDatesToFalse() throws {
+    @Test("Config defaults syncDates to true when key absent")
+    func defaultsSyncDatesToTrue() throws {
         let json = """
         {
             "graph": "my-graph",
@@ -99,7 +99,7 @@ struct ConfigTests {
         }
         """
         let config = try JSONDecoder().decode(Config.self, from: Data(json.utf8))
-        #expect(config.syncDates == false)
+        #expect(config.syncDates == true)
     }
 
     @Test("Config defaults syncPriority to true when key absent")
@@ -172,7 +172,7 @@ struct ConfigTests {
             logseqCliPath: nil
         )
         #expect(config.listId(forStatus: "Backlog") == "b")
-        #expect(config.syncDates == false)
+        #expect(config.syncDates == true)
         #expect(config.syncPriority == true)
         #expect(config.gateForceFullRunMinutes == 60)
         #expect(config.conflictPolicy == "mostRecentWins")

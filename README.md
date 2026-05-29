@@ -2,7 +2,7 @@
 
 **A macOS command-line tool that syncs [Logseq](https://logseq.com) tasks with Apple Reminders.** 
 
-- It offers true two-way sync, but **only for metadata**: *completion*, *status markers*, *priority*, and *due dates (opt-in)*. 
+- It offers true two-way sync, but **only for metadata**: *completion*, *status markers*, *priority*, and *due dates*. 
 
 - The title and notes fields are only **synced in one direction**. Logseq remains the *sole source of truth*, and *markdown is stripped* on importing to Reminders. The only exception is when you **create new tasks** in Reminders. 
 - It runs on a schedule that you setup on install. You can also invoke a manual sync.
@@ -36,11 +36,11 @@ There's no list for **Done**. Completing a reminder (checking it off) marks the 
 
 ### Due dates (Scheduled / Deadline)
 
-Date sync is **opt-in** (`syncDates: false` by default). Enable it by setting `"syncDates": true` in `~/.logseq-reminders-sync/config.json`.
-
-When enabled, the Logseq **Deadline** date takes precedence over **Scheduled** when both are set. Whichever field is present maps to the reminder's due date in Reminders, and vice versa — a due date set or changed in Reminders writes back to the same field in Logseq. If a task has no date on either side, dates are left alone.
+Logseq **Deadline** date takes precedence over **Scheduled** when both are set. Whichever field is present maps to the reminder's due date in Reminders, and vice versa — a due date set or changed in Reminders writes back to the same field in Logseq. If a task has no date on either side, dates are left alone.
 
 Conflict resolution for dates follows the same rule as everything else: if both sides changed since the last sync, the most recently edited one wins.
+
+This feature can be turned off. Disable it by setting `"syncDates":false` in `~/.logseq-reminders-sync/config.json`.
 
 ### When both sides changed
 
@@ -120,7 +120,7 @@ Config lives at `~/.logseq-reminders-sync/config.json` (created by `setup`). Fie
 | `statusLists` | Map of status → `{id, title}` for each of the 5 lists. Keys are canonical statuses (`Backlog`, `Todo`, `Doing`, `In Review`, `Canceled`). |
 | `journalInboxTitle` | Where newly-adopted reminders land on today's journal page. Omit (or set to `null`) to place tasks at the **top level** of the journal; set to a block title (e.g. `"📥 Inbox"`) to nest them under that sub-block. Configured via `setup`. |
 | `conflictPolicy` | Conflict resolution strategy (`mostRecentWins`). |
-| `syncDates` | Sync due dates both ways. Default `false`. |
+| `syncDates` | Sync due dates both ways. Default `true`. |
 | `syncPriority` | Sync task priority both ways. Default `true`. |
 | `gateForceFullRunMinutes` | Force a full sync at least this often, regardless of detected changes. Default `60`. |
 | `logseqCliPath` | Absolute path to the `logseq` CLI. Set by `setup`; needed because the scheduled background run has a minimal environment and can't search your `PATH`. |
