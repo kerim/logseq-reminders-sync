@@ -72,102 +72,6 @@ struct LogseqClient {
 
     // MARK: - Reading tasks
 
-    func fetchDoingTasks() async throws -> [LogseqBlock] {
-        struct TaskMeta {
-            var title: String
-            var updatedAt: Int64
-            var deadline: Int?
-            var scheduled: Int?
-            var priority: LogseqPriority?
-        }
-
-        // Base: all blocks with status=Doing, regardless of tag type
-        let baseRows = try await query("""
-            [:find ?uuid ?title ?updated
-             :where [?b :logseq.property/status ?s] [?s :block/title "Doing"]
-                    [?b :block/uuid ?uuid] [?b :block/title ?title]
-                    [?b :block/updated-at ?updated]]
-            """)
-
-        var byUUID: [String: TaskMeta] = [:]
-        if let rows = baseRows as? [[Any]] {
-            for row in rows {
-                guard let uuid = row[0] as? String,
-                      let title = row[1] as? String,
-                      let updated = jsonInt64(row[2]) else { continue }
-                byUUID[uuid] = TaskMeta(title: title, updatedAt: updated)
-            }
-        }
-
-        // Deadlines (only blocks that have one)
-        let deadlineRows = try await query("""
-            [:find ?uuid ?deadline
-             :where [?b :logseq.property/status ?s] [?s :block/title "Doing"]
-                    [?b :block/uuid ?uuid] [?b :logseq.property/deadline ?deadline]]
-            """)
-        if let rows = deadlineRows as? [[Any]] {
-            for row in rows {
-                guard let uuid = row[0] as? String, let d = row[1] as? Int,
-                      byUUID[uuid] != nil else { continue }
-                byUUID[uuid]!.deadline = d
-            }
-        }
-
-        // Scheduled (only blocks that have one)
-        let scheduledRows = try await query("""
-            [:find ?uuid ?scheduled
-             :where [?b :logseq.property/status ?s] [?s :block/title "Doing"]
-                    [?b :block/uuid ?uuid] [?b :logseq.property/scheduled ?scheduled]]
-            """)
-        if let rows = scheduledRows as? [[Any]] {
-            for row in rows {
-                guard let uuid = row[0] as? String, let s = row[1] as? Int,
-                      byUUID[uuid] != nil else { continue }
-                byUUID[uuid]!.scheduled = s
-            }
-        }
-
-        // Priority (only blocks that have one)
-        let priorityRows = try await query("""
-            [:find ?uuid ?prio-title
-             :where [?b :logseq.property/status ?s] [?s :block/title "Doing"]
-                    [?b :block/uuid ?uuid]
-                    [?b :logseq.property/priority ?p]
-                    [?p :block/title ?prio-title]]
-            """)
-        if let rows = priorityRows as? [[Any]] {
-            for row in rows {
-                guard let uuid = row[0] as? String, let title = row[1] as? String,
-                      byUUID[uuid] != nil else { continue }
-                if let prio = LogseqPriority(rawValue: title) {
-                    byUUID[uuid]!.priority = prio
-                } else {
-                    logger?.log("WARN: unknown Logseq priority '\(title)' on block \(uuid.prefix(8))…")
-                }
-            }
-        }
-
-        // Recurrence flag for Doing tasks
-        let recurRows = try await query("""
-            [:find ?uuid
-             :where [?b :logseq.property/status ?s] [?s :block/title "Doing"]
-                    [?b :block/uuid ?uuid] [?b :logseq.property.repeat/repeated? true]]
-            """)
-        var recurringUUIDs = Set<String>()
-        if let rows = recurRows as? [[Any]] {
-            for row in rows {
-                if let uuid = row[0] as? String { recurringUUIDs.insert(uuid) }
-            }
-        }
-
-        return byUUID.map { uuid, meta in
-            LogseqBlock(uuid: uuid, title: meta.title, updatedAt: meta.updatedAt,
-                        status: "Doing", deadline: meta.deadline, scheduled: meta.scheduled,
-                        isRecurring: recurringUUIDs.contains(uuid),
-                        priority: meta.priority)
-        }
-    }
-
     /// Fetch all tasks with priority Urgent, High, or Medium — regardless of status.
     /// Returns every status (including Done and Canceled) so the engine can retain
     /// still-prioritized closed tasks. Status is nil when absent (engine handles it
@@ -594,6 +498,20 @@ struct LogseqClient {
                 continuation.resume(throwing: error)
             }
         }
+    }
+
+    /// Graph-wide max datascript transaction id — a single integer the database
+    /// bumps on every datom write (any block/property/tag/page change). Used as the
+    /// Logseq-side change-signal for the smart-polling gate. Needs no `bootstrap()`:
+    /// the query binds only the built-in tx slot. Throws on an empty/non-numeric
+    /// result so the gate falls through to a full run (over-trigger, never under).
+    func fetchMaxTx() async throws -> Int64 {
+        let result = try await query("[:find (max ?tx) :where [?e ?a ?v ?tx]]")
+        guard let rows = result as? [[Any]], let row = rows.first, !row.isEmpty,
+              let tx = jsonInt64(row[0]) else {
+            throw LogseqError.unexpectedShape("max-tx query: \(String(describing: result).prefix(200))")
+        }
+        return tx
     }
 
     // MARK: - Helpers

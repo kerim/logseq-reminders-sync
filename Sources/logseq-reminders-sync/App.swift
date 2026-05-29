@@ -3,8 +3,8 @@ import SyncCore
 
 @main
 struct App {
-    // BUILD 21 (fix: skip Canceled at mirror creation; fix: pairedUUIDs includes torn-down pairs)
-    static let buildVersion = "21"
+    // BUILD 23 (lint fixes, simplify cleanup: removed dead fetchDoingTasks, SyncEngine cleanups)
+    static let buildVersion = "23"
     static let appVersion = "0.1.0"
 
     static let cliPath = "/Users/niyaro/.local/bin/logseq"
@@ -41,7 +41,7 @@ struct App {
             }
 
             // Default / --once: run a single sync
-            try await runOnce(config: config)
+            try await runOnce(config: config, force: args.contains("--force"))
         } catch {
             fputs("Error: \(error.localizedDescription)\n", stderr)
             exit(1)
@@ -50,7 +50,7 @@ struct App {
 
     // MARK: - Sync
 
-    static func runOnce(config: Config) async throws {
+    static func runOnce(config: Config, force: Bool = false) async throws {
         let fm = FileManager.default
         let configDir = Config.configDir
 
@@ -77,9 +77,45 @@ struct App {
         logger.log("Resolving Reminders lists...")
         try await remindersStore.resolveCalendars(config: config)
 
-        // Bootstrap Logseq client
-        logger.log("Bootstrapping Logseq client for graph '\(config.graph)'...")
+        // Construct the Logseq client (struct init — no I/O). bootstrap() is deferred
+        // to the run path so the gate's cheap probe doesn't pay ~7 CLI round-trips.
         var logseqClient = LogseqClient(cliPath: cliPath, graph: config.graph, logger: logger)
+
+        // ── Smart-polling gate ────────────────────────────────────────────────
+        // Skip the full pass when neither side changed since the last run. Any
+        // probe failure falls through to a full sync (over-trigger, never under).
+        let state = stateStore.load()
+        if force {
+            logger.log("--force: bypassing change gate")
+        } else {
+            do {
+                let tx = try await logseqClient.fetchMaxTx()
+                let sig = try await remindersStore.changeSignal()
+                let current = ChangeSignals(
+                    logseqMaxTx: tx,
+                    remindersListCounts: sig.listCounts,
+                    remindersMaxModifiedMs: sig.maxModifiedMs
+                )
+                let decision = SyncGate.decision(
+                    cached: state.signals,
+                    current: current,
+                    lastRun: state.lastRunDate,
+                    now: Date(),
+                    forceAfter: TimeInterval(config.gateForceFullRunMinutes * 60)
+                )
+                if decision == .skip {
+                    logger.log(
+                        "No changes since last run (logseq tx=\(tx), reminders=\(sig.listCounts) mod=\(sig.maxModifiedMs)) — skipping"
+                    )
+                    return
+                }
+            } catch {
+                logger.log("Gate probe failed (\(error.localizedDescription)) — running full sync")
+            }
+        }
+
+        // Bootstrap Logseq client (run path only)
+        logger.log("Bootstrapping Logseq client for graph '\(config.graph)'...")
         try await logseqClient.bootstrap()
 
         // Run engine
@@ -91,6 +127,25 @@ struct App {
             logger: logger
         )
         try await engine.run()
+
+        // ── Post-write baseline ───────────────────────────────────────────────
+        // Recompute signals AFTER the engine's writes so the gate doesn't read our
+        // own writes as a change next poll. Fresh-load (the engine just saved its
+        // own state) and update only the three signal fields to avoid clobbering it.
+        do {
+            let tx = try await logseqClient.fetchMaxTx()
+            let sig = try await remindersStore.changeSignal()
+            var fresh = stateStore.load()
+            fresh.logseqMaxTx = tx
+            fresh.remindersListCounts = sig.listCounts
+            fresh.remindersMaxModifiedMs = sig.maxModifiedMs
+            stateStore.save(fresh)
+        } catch {
+            logger.log(
+                "Post-run signal capture failed (\(error.localizedDescription)) — " +
+                "gate cache not updated; next run will be a full sync"
+            )
+        }
     }
 
     // MARK: - Backfill
@@ -217,6 +272,7 @@ struct App {
           --version, -v      Print version and exit
           --help, -h         Print this help and exit
           --once             Run a single sync and exit (default)
+          --force            Bypass the change gate and run a full sync pass
           --dump-reminders   List reminders in the configured list (diagnostic)
           --dump-tasks       List Doing tasks in the configured graph (diagnostic)
           --backfill-links   Write the Logseq backlink into existing mirror

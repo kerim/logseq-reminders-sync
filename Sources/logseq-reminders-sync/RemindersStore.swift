@@ -83,6 +83,30 @@ actor RemindersStore {
         ))
     }
 
+    /// Cheap change-signal for the smart-polling gate: incomplete count per managed
+    /// list, plus the max `lastModifiedDate` (epoch ms) across incomplete +
+    /// completed-in-the-last-7-days reminders. Per-list counts catch a managed→managed
+    /// move (which leaves the total unchanged); the max-modified catches edits and
+    /// completions. Uses a fixed 7-day completed window (independent of the engine's
+    /// lastRunDate lookback) so a run of skips doesn't shrink it. Throws if no
+    /// calendars are resolved, so a mis-sequenced caller fails safe to a full run.
+    func changeSignal() async throws -> (listCounts: [String: Int], maxModifiedMs: Int64) {
+        guard !resolvedCalendars().isEmpty else { throw RemindersError.calendarNotResolved }
+
+        let incomplete = try await fetchIncomplete()
+        let since = Calendar.current.date(byAdding: .day, value: -7, to: Date())!
+        let completed = try await fetchCompleted(since: since)
+
+        var counts: [String: Int] = [:]
+        for snap in incomplete { counts[snap.listId, default: 0] += 1 }
+
+        let maxModifiedMs = (incomplete + completed)
+            .compactMap { $0.lastModified.map { Int64($0.timeIntervalSince1970 * 1000) } }
+            .max() ?? 0
+
+        return (counts, maxModifiedMs)
+    }
+
     /// Fetch a single live reminder by localId. Store-wide (not scoped to managed lists)
     /// so it can reconcile known pairs regardless of which list they're in.
     func fetchSnapshot(localId: String) -> ReminderSnapshot? {

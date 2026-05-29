@@ -147,15 +147,42 @@ public struct SyncState: Codable, Sendable {
     /// as a fresh Logseq block.
     public var archivedExtIds: [String]
 
+    // MARK: - Smart-polling gate cache
+    // Cheap change-signals captured at the end of the last full run, used by the
+    // gate to skip a redundant pass when neither side changed. All three are
+    // optional for back-compat with pre-gate state.json; a nil in any of them means
+    // "no usable cache" → the gate runs a full sync (see `signals`).
+
+    /// Logseq datascript max transaction id at the end of the last run.
+    public var logseqMaxTx: Int64?
+    /// Incomplete-reminder count per managed list at the end of the last run.
+    public var remindersListCounts: [String: Int]?
+    /// Max `lastModifiedDate` (epoch ms) across incomplete + recently-completed
+    /// reminders at the end of the last run.
+    public var remindersMaxModifiedMs: Int64?
+
+    /// Assembled gate signals, or nil when the cache is incomplete (any field nil).
+    /// nil drives `SyncGate.decision` to `.run`, preserving the over-trigger rule.
+    public var signals: ChangeSignals? {
+        guard let tx = logseqMaxTx,
+              let counts = remindersListCounts,
+              let maxMod = remindersMaxModifiedMs else { return nil }
+        return ChangeSignals(logseqMaxTx: tx, remindersListCounts: counts, remindersMaxModifiedMs: maxMod)
+    }
+
     public init() {
         self.pairs = []
         self.captures = []
         self.lastRunDate = nil
         self.archivedExtIds = []
+        self.logseqMaxTx = nil
+        self.remindersListCounts = nil
+        self.remindersMaxModifiedMs = nil
     }
 
     private enum CodingKeys: String, CodingKey {
         case pairs, captures, lastRunDate, archivedExtIds
+        case logseqMaxTx, remindersListCounts, remindersMaxModifiedMs
     }
 
     public init(from decoder: Decoder) throws {
@@ -164,6 +191,9 @@ public struct SyncState: Codable, Sendable {
         captures       = try c.decode([CaptureRecord].self,   forKey: .captures)
         lastRunDate    = try c.decodeIfPresent(Date.self,     forKey: .lastRunDate)
         archivedExtIds = try c.decodeIfPresent([String].self, forKey: .archivedExtIds) ?? []
+        logseqMaxTx            = try c.decodeIfPresent(Int64.self,         forKey: .logseqMaxTx)
+        remindersListCounts    = try c.decodeIfPresent([String: Int].self, forKey: .remindersListCounts)
+        remindersMaxModifiedMs = try c.decodeIfPresent(Int64.self,         forKey: .remindersMaxModifiedMs)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -172,5 +202,8 @@ public struct SyncState: Codable, Sendable {
         try c.encode(captures,             forKey: .captures)
         try c.encodeIfPresent(lastRunDate, forKey: .lastRunDate)
         try c.encode(archivedExtIds,       forKey: .archivedExtIds)
+        try c.encodeIfPresent(logseqMaxTx,            forKey: .logseqMaxTx)
+        try c.encodeIfPresent(remindersListCounts,    forKey: .remindersListCounts)
+        try c.encodeIfPresent(remindersMaxModifiedMs, forKey: .remindersMaxModifiedMs)
     }
 }

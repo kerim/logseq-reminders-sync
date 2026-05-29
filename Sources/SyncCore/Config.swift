@@ -18,6 +18,10 @@ public struct Config: Codable {
     public let syncDates: Bool
     /// Whether to sync task priority. Defaults to true (opt-out) for legacy configs.
     public let syncPriority: Bool
+    /// Smart-polling gate: force a full run if this many minutes have elapsed since
+    /// the last run, regardless of change-signals. Backstop for graph-reimport tx
+    /// resets and the bounded under-trigger windows. Defaults to 60.
+    public let gateForceFullRunMinutes: Int
 
     // MARK: - Status ↔ list routing (SyncCore-level, EventKit-free)
 
@@ -55,6 +59,7 @@ public struct Config: Codable {
         case journalInboxTitle, fallbackInboxPage, conflictPolicy
         case syncDates
         case syncPriority
+        case gateForceFullRunMinutes
     }
 
     private enum LegacyCodingKeys: String, CodingKey {
@@ -78,6 +83,7 @@ public struct Config: Codable {
             syncDates = (try? legacy.decode(Bool.self, forKey: .syncDeadlines)) ?? false
         }
         syncPriority = (try? c.decodeIfPresent(Bool.self, forKey: .syncPriority)) ?? true
+        gateForceFullRunMinutes = (try? c.decodeIfPresent(Int.self, forKey: .gateForceFullRunMinutes)) ?? 60
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -89,5 +95,6 @@ public struct Config: Codable {
         try c.encode(conflictPolicy,    forKey: .conflictPolicy)
         try c.encode(syncDates,         forKey: .syncDates)
         try c.encode(syncPriority,      forKey: .syncPriority)
+        try c.encode(gateForceFullRunMinutes, forKey: .gateForceFullRunMinutes)
     }
 }

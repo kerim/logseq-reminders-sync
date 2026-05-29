@@ -138,19 +138,10 @@ struct SyncEngine {
                     ? Mapper.reminderPriorityToLogseq(snap.priority) ?? .medium
                     : nil
                 // Re-run the promote; ignore error (will retry next pass)
-                _ = try? await logseq.run([
-                    "upsert", "task", "-g", config.graph,
-                    "--uuid", blockUUID,
-                    "--status", config.status(forListId: snap.listId) ?? "Todo",
-                    "--output", "json"
-                ])
+                let targetStatus = config.status(forListId: snap.listId) ?? "Todo"
+                try? await logseq.updateTaskStatus(blockUUID: blockUUID, status: targetStatus)
                 if let p = capturedPriority {
-                    _ = try? await logseq.run([
-                        "upsert", "task", "-g", config.graph,
-                        "--uuid", blockUUID,
-                        "--priority", p.rawValue,
-                        "--output", "json"
-                    ])
+                    try? await logseq.setBlockPriority(blockUUID: blockUUID, priority: p)
                 }
                 continue
             }
@@ -299,7 +290,7 @@ struct SyncEngine {
             if config.syncPriority {
                 let prioResult = try await mergePriority(
                     updated: updated, block: block, live: live, preWriteReminderMs: preWriteReminderMs)
-                if case .appleCleared(let u) = prioResult {
+                if case .appleCleared = prioResult {
                     // Apple cleared priority and won the conflict → set Logseq to Low and teardown.
                     logger.log("Block \(uuid.prefix(8))… Apple cleared priority → setting Logseq Low, deleting reminder")
                     try await logseq.setBlockPriority(blockUUID: uuid, priority: .low)
@@ -328,21 +319,12 @@ struct SyncEngine {
             }
 
             let logseqMs = block.updatedAt
-            // For the status axis: if a list-move happened but EventKit didn't bump
-            // lastModifiedDate (checked in POC — it DID bump it, so synthesized now()
-            // is moot), use preWriteReminderMs. The POC confirmed bumping; this path is
-            // kept as a documented safeguard.
-            // Since the POC confirmed .calendar reassignment bumps lastModifiedDate,
-            // preWriteReminderMs is already the correct conflict operand for list-moves.
-            // No synthesized now() stamp is needed.
-            let statusReminderMs: Int64? = preWriteReminderMs
-
             let action = Mapper.statusMergeAction(
                 logseqStatus: blockStatus,
                 effectiveReminderStatus: effStatus,
                 lastStatus: pair.lastStatus,
                 logseqMs: logseqMs,
-                reminderMs: statusReminderMs,
+                reminderMs: preWriteReminderMs,
                 isRecurring: block.isRecurring)
 
             switch action {
