@@ -71,7 +71,7 @@ To get the list, re-run `setup` — it creates **Logseq Notes** alongside the fi
 ## Install
 
 ```fish
-git clone <repo-url>
+git clone https://github.com/kerim/logseq-reminders-sync
 cd logseq-reminders-sync
 bash scripts/install.sh
 ```
