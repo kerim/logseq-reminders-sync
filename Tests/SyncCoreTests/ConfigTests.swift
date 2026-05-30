@@ -138,7 +138,8 @@ struct ConfigTests {
         let original = Config.makeDefault(
             graph: "g",
             statusLists: ["Doing": .init(id: "id-doing", title: "Logseq Doing")],
-            logseqCliPath: "/opt/homebrew/bin/logseq"
+            logseqCliPath: "/opt/homebrew/bin/logseq",
+            notesList: nil
         )
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(Config.self, from: data)
@@ -169,7 +170,8 @@ struct ConfigTests {
                 "Backlog": .init(id: "b", title: "Logseq Backlog"),
                 "Todo": .init(id: "t", title: "Logseq Todo")
             ],
-            logseqCliPath: nil
+            logseqCliPath: nil,
+            notesList: nil
         )
         #expect(config.listId(forStatus: "Backlog") == "b")
         #expect(config.syncDates == true)
@@ -183,7 +185,8 @@ struct ConfigTests {
         let original = Config.makeDefault(
             graph: "old",
             statusLists: ["Doing": .init(id: "id-doing", title: "Logseq Doing")],
-            logseqCliPath: "/usr/local/bin/logseq"
+            logseqCliPath: "/usr/local/bin/logseq",
+            notesList: nil
         )
         let switched = original.with(graph: "new")
         #expect(switched.graph == "new")
@@ -250,7 +253,8 @@ struct ConfigTests {
         let config = Config.makeDefault(
             graph: "g",
             statusLists: ["Doing": .init(id: "id-doing", title: "Logseq Doing")],
-            logseqCliPath: nil
+            logseqCliPath: nil,
+            notesList: nil
         )
         #expect(config.journalInboxTitle == nil)
     }
@@ -261,6 +265,7 @@ struct ConfigTests {
             graph: "g",
             statusLists: ["Doing": .init(id: "id-doing", title: "Logseq Doing")],
             logseqCliPath: nil,
+            notesList: nil,
             journalInboxTitle: "Inbox"
         )
         #expect(original.journalInboxTitle == "Inbox")
@@ -274,7 +279,8 @@ struct ConfigTests {
         let nilConfig = Config.makeDefault(
             graph: "old",
             statusLists: ["Doing": .init(id: "id-doing", title: "Logseq Doing")],
-            logseqCliPath: nil
+            logseqCliPath: nil,
+            notesList: nil
         )
         #expect(nilConfig.with(graph: "new").journalInboxTitle == nil)
 
@@ -282,8 +288,49 @@ struct ConfigTests {
             graph: "old",
             statusLists: ["Doing": .init(id: "id-doing", title: "Logseq Doing")],
             logseqCliPath: nil,
+            notesList: nil,
             journalInboxTitle: "Inbox"
         )
         #expect(namedConfig.with(graph: "new").journalInboxTitle == "Inbox")
+    }
+
+    // MARK: - notesList optional tests
+
+    @Test("notesList absent decodes to nil (existing-user config stays inert)")
+    func notesListAbsentIsNil() throws {
+        let json = """
+        {
+            "graph": "g",
+            \(statusListsJSON),
+            "fallbackInboxPage": "Inbox",
+            "conflictPolicy": "mostRecentWins"
+        }
+        """
+        let config = try JSONDecoder().decode(Config.self, from: Data(json.utf8))
+        #expect(config.notesList == nil)
+        #expect(config.notesListId == nil)
+        let data = try JSONEncoder().encode(config)
+        let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        #expect(dict?["notesList"] == nil)   // encodeIfPresent omits a nil notesList
+    }
+
+    @Test("notesList round-trips and never leaks into status routing / managed scope")
+    func notesListRoundTrips() throws {
+        let original = Config.makeDefault(
+            graph: "g",
+            statusLists: ["Doing": .init(id: "id-doing", title: "Logseq Doing")],
+            logseqCliPath: nil,
+            notesList: .init(id: "id-notes", title: "Logseq Notes")
+        )
+        #expect(original.notesListId == "id-notes")
+        // Invariant: notes list is NOT a status list and NOT a managed list.
+        #expect(original.managedListIds.contains("id-notes") == false)
+        #expect(original.status(forListId: "id-notes") == nil)
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(Config.self, from: data)
+        #expect(decoded.notesList?.id == "id-notes")
+        #expect(decoded.notesList?.title == "Logseq Notes")
+        // with(graph:) must carry notesList forward.
+        #expect(original.with(graph: "new").notesListId == "id-notes")
     }
 }

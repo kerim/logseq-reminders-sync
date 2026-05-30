@@ -31,6 +31,12 @@ public struct Config: Codable {
     /// nil, the executable falls back to `which logseq` / common locations.
     public let logseqCliPath: String?
 
+    /// The optional "Logseq Notes" Reminders list (id + title) for one-way note import.
+    /// `nil` for configs predating this feature — when nil the notes feature is inert.
+    /// Deliberately kept OUT of `statusLists`/`managedListIds`: notes must never be routed
+    /// as a status or adopted as a two-way mirror task (see SyncEngine `.freshNote`).
+    public let notesList: ListEntry?
+
     // MARK: - Construction
 
     public init(
@@ -42,7 +48,8 @@ public struct Config: Codable {
         syncDates: Bool,
         syncPriority: Bool,
         gateForceFullRunMinutes: Int,
-        logseqCliPath: String?
+        logseqCliPath: String?,
+        notesList: ListEntry?
     ) {
         self.graph = graph
         self.statusLists = statusLists
@@ -53,6 +60,7 @@ public struct Config: Codable {
         self.syncPriority = syncPriority
         self.gateForceFullRunMinutes = gateForceFullRunMinutes
         self.logseqCliPath = logseqCliPath
+        self.notesList = notesList
     }
 
     /// Copy with a different target graph, preserving every other field. Used by
@@ -67,7 +75,8 @@ public struct Config: Codable {
             syncDates: syncDates,
             syncPriority: syncPriority,
             gateForceFullRunMinutes: gateForceFullRunMinutes,
-            logseqCliPath: logseqCliPath
+            logseqCliPath: logseqCliPath,
+            notesList: notesList
         )
     }
 
@@ -77,10 +86,15 @@ public struct Config: Codable {
 
     /// A fresh config with the standard defaults. `statusLists` is keyed by canonical
     /// status name (NOT the list display titles).
+    /// `notesList` has NO default (unlike `journalInboxTitle`): the only place a `nil`
+    /// notes list is intentional is a caller passing `notesList: nil` explicitly. Forcing
+    /// it keeps full compiler enforcement on the fresh-user setup path, which builds via
+    /// `makeDefault` rather than `init`.
     public static func makeDefault(
         graph: String,
         statusLists: [String: ListEntry],
         logseqCliPath: String?,
+        notesList: ListEntry?,
         journalInboxTitle: String? = nil
     ) -> Config {
         Config(
@@ -92,7 +106,8 @@ public struct Config: Codable {
             syncDates: true,
             syncPriority: true,
             gateForceFullRunMinutes: 60,
-            logseqCliPath: logseqCliPath
+            logseqCliPath: logseqCliPath,
+            notesList: notesList
         )
     }
 
@@ -106,10 +121,14 @@ public struct Config: Codable {
         statusLists.first(where: { $0.value.id == listId })?.key
     }
 
-    /// All managed calendar identifiers (for fetch scoping).
+    /// All managed calendar identifiers (for fetch scoping). Notes list is intentionally
+    /// excluded — see `notesList`.
     public var managedListIds: Set<String> {
         Set(statusLists.values.map(\.id))
     }
+
+    /// The "Logseq Notes" list calendar identifier, or nil when the feature is unconfigured.
+    public var notesListId: String? { notesList?.id }
 
     // MARK: - Static
 
@@ -145,6 +164,7 @@ public struct Config: Codable {
         case syncPriority
         case gateForceFullRunMinutes
         case logseqCliPath
+        case notesList
     }
 
     private enum LegacyCodingKeys: String, CodingKey {
@@ -171,6 +191,7 @@ public struct Config: Codable {
         syncPriority = (try? c.decodeIfPresent(Bool.self, forKey: .syncPriority)) ?? true
         gateForceFullRunMinutes = (try? c.decodeIfPresent(Int.self, forKey: .gateForceFullRunMinutes)) ?? 60
         logseqCliPath = try c.decodeIfPresent(String.self, forKey: .logseqCliPath)
+        notesList = try c.decodeIfPresent(ListEntry.self, forKey: .notesList)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -184,5 +205,6 @@ public struct Config: Codable {
         try c.encode(syncPriority,      forKey: .syncPriority)
         try c.encode(gateForceFullRunMinutes, forKey: .gateForceFullRunMinutes)
         try c.encodeIfPresent(logseqCliPath, forKey: .logseqCliPath)
+        try c.encodeIfPresent(notesList, forKey: .notesList)
     }
 }

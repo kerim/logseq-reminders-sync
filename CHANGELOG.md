@@ -1,5 +1,17 @@
 # Changelog
 
+## Build 33 — 2026-05-30
+
+### Added
+- **One-way note capture via a new "Logseq Notes" list.** A sixth Reminders list, created by `setup`, imports reminders into Logseq as plain notes: the title becomes a top-level block on today's journal and each paragraph of the note becomes a nested block beneath it (blank lines dropped). Notes get **no task status**, the source reminder is **marked complete** after import, and the import is strictly **one-way** — notes are never synced back, and deleting the reminder afterwards leaves the Logseq note untouched (unlike a task, whose reminder would reappear). Idempotency uses a separate hidden `captured-reminder-id` property, distinct from the two-way `reminder-id` link.
+- `notesList` config field (`{id, title}`). Absent in configs predating this feature, in which case note capture is inactive — existing setups are unaffected until they re-run `setup`.
+
+### Changed
+- `switch-graph` now also empties and verifies the **Logseq Notes** list as part of its full clean.
+- Internal: extracted `CaptureTarget.cliArgs` and `LogseqClient.todaysCaptureTarget(…)` to remove duplication shared between the task-adopt and note-import flows.
+
+---
+
 ## Build 31 — 2026-05-29
 
 ### Changed

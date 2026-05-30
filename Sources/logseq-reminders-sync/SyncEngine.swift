@@ -87,6 +87,7 @@ struct SyncEngine {
             case linkedRebuild(blockUUID: String)
             case alreadyIngested(journalUUID: String)
             case fresh
+            case freshNote
         }
 
         var pairIndexByLocalId: [String: Int] = [:]
@@ -111,6 +112,18 @@ struct SyncEngine {
             }
             if let journalUUID = captureUUIDForExtId[snap.extId] {
                 classified.append((snap, .alreadyIngested(journalUUID: journalUUID))); continue
+            }
+            // A reminder in the "Logseq Notes" list becomes a one-way NOTE import — never a
+            // mirror task. Guard an empty extId: snapshot(from:) coerces a nil
+            // calendarItemExternalIdentifier to "", which would collide on the extId-keyed
+            // maps above; skip + log rather than anchor a note on a non-disambiguating key.
+            if let notesListId = config.notesListId, snap.listId == notesListId {
+                if snap.extId.isEmpty {
+                    logger.log("Skipping note with empty extId: \(snap.title.prefix(60))")
+                } else {
+                    classified.append((snap, .freshNote))
+                }
+                continue
             }
             // Only reminders in one of the 5 managed lists can be fresh captures.
             guard config.managedListIds.contains(snap.listId) else { continue }
@@ -489,15 +502,8 @@ struct SyncEngine {
             guard let statusForList = config.status(forListId: snap.listId) else { continue }
 
             logger.log("Adopting new reminder as mirror: \(snap.title.prefix(60))")
-            let journalPage = LogseqClient.journalPageName()
-            let captureTarget: CaptureTarget
-            if let inboxTitle = config.journalInboxTitle {
-                let inboxUUID = try await logseq.findOrCreateInboxBlock(
-                    journalPage: journalPage, inboxTitle: inboxTitle)
-                captureTarget = .inboxBlock(uuid: inboxUUID)
-            } else {
-                captureTarget = .journalPage(name: journalPage)
-            }
+            let captureTarget = try await logseq.todaysCaptureTarget(
+                inboxTitle: config.journalInboxTitle)
 
             // Priority: carry from reminder; if none, default to Medium (Option 1).
             let capturedPriority: LogseqPriority?
@@ -555,6 +561,37 @@ struct SyncEngine {
                 lastDueSource: config.syncDates ? .scheduled : nil,
                 lastPriority: config.syncPriority ? seededPriority?.forSync : nil)
             state.pairs.append(pair)
+        }
+
+        // ── Step 7.5: Import "Logseq Notes" reminders one-way ─────────────────
+        // A reminder in the notes list becomes a plain Logseq note: title → top-level
+        // block, body paragraphs → nested children. NOT a #Task, never paired, never
+        // synced back. Idempotency: the captured-reminder-id anchor (caught as
+        // .alreadyIngested next pass) plus a CaptureRecord. Deleting the reminder later
+        // can't touch the note — there is no pair to drive any cascade.
+        for (snap, cls) in classified {
+            guard case .freshNote = cls else { continue }
+            if knownCapExtIds.contains(snap.extId) { continue }     // parity with Step 7
+            if captureUUIDForExtId[snap.extId] != nil { continue }  // already anchored
+
+            logger.log("Importing note: \(snap.title.prefix(60))")
+            let captureTarget = try await logseq.todaysCaptureTarget(
+                inboxTitle: config.journalInboxTitle)
+
+            let paragraphs = Mapper.splitNoteParagraphs(snap.notes)
+            let topUUID = try await logseq.createNote(
+                target: captureTarget,
+                title: snap.title,
+                paragraphs: paragraphs,
+                capturedReminderExtId: snap.extId)
+
+            // One-shot: complete the source reminder, and record the capture so it isn't
+            // re-imported even before the captured-reminder-id index refreshes next pass.
+            try await reminders.completeReminder(localId: snap.localId)
+            state.captures.append(CaptureRecord(
+                reminderLocalId: snap.localId,
+                reminderExtId: snap.extId,
+                journalBlockUUID: topUUID))
         }
 
         // Archive previously-ingested captures that weren't completed (crash recovery).

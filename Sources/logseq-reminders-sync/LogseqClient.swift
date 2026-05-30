@@ -15,6 +15,15 @@ enum CaptureTarget {
     case inboxBlock(uuid: String)
     /// Directly on the journal page (top-level block).
     case journalPage(name: String)
+
+    /// The `logseq upsert block` target flag for this destination. Centralized here
+    /// so every create path (capture task, note import) renders args identically.
+    var cliArgs: [String] {
+        switch self {
+        case .inboxBlock(let uuid):  return ["--target-uuid", uuid]
+        case .journalPage(let name): return ["--target-page", name]
+        }
+    }
 }
 
 struct LogseqClient {
@@ -456,6 +465,18 @@ struct LogseqClient {
         return "\(month) \(day)\(suffix), \(comps.year!)"
     }
 
+    /// Resolve where a journal capture should land *today*, given the inbox config.
+    /// With `journalInboxTitle` set, the target is a (find-or-created) named sub-block;
+    /// otherwise it's the journal page top level. Shared by the adopt (Step 7) and
+    /// note-import (Step 7.5) paths so the placement rule lives in exactly one place.
+    func todaysCaptureTarget(inboxTitle: String?) async throws -> CaptureTarget {
+        let journalPage = Self.journalPageName()
+        guard let inboxTitle else { return .journalPage(name: journalPage) }
+        let inboxUUID = try await findOrCreateInboxBlock(
+            journalPage: journalPage, inboxTitle: inboxTitle)
+        return .inboxBlock(uuid: inboxUUID)
+    }
+
     /// Find existing Inbox block or create it on the journal page. Returns the block UUID.
     func findOrCreateInboxBlock(journalPage: String, inboxTitle: String) async throws -> String {
         // Escape for Datascript EDN string literal (backslash first, then quote).
@@ -501,11 +522,7 @@ struct LogseqClient {
         priority: LogseqPriority? = nil
     ) async throws -> String {
         guard let idents = propertyIdents else { throw LogseqError.notBootstrapped }
-        let targetArgs: [String]
-        switch target {
-        case .inboxBlock(let uuid):  targetArgs = ["--target-uuid", uuid]
-        case .journalPage(let name): targetArgs = ["--target-page", name]
-        }
+        let targetArgs = target.cliArgs
         // Atomic: block content + reminder-id in one upsert.
         let createResult = try await run(
             ["upsert", "block", "-g", graph] + targetArgs + [
@@ -526,6 +543,44 @@ struct LogseqClient {
         promoteArgs.append(contentsOf: ["--output", "json"])
         _ = try await run(promoteArgs)
         return blockUUID
+    }
+
+    /// Create a one-way NOTE capture at the given target on the journal page.
+    ///
+    /// Writes `captured-reminder-id` (NOT `reminder-id`) atomically in the same upsert
+    /// that creates the title block — anchor-first, so a crash mid-import leaves an
+    /// anchored note (re-classified `.alreadyIngested`, skipped) rather than a duplicate
+    /// top block. The note is deliberately NOT promoted to a `#Task`: it carries no status.
+    ///
+    /// Each paragraph becomes a nested child block under the title, appended in order.
+    /// Returns the new top-block UUID.
+    func createNote(
+        target: CaptureTarget,
+        title: String,
+        paragraphs: [String],
+        capturedReminderExtId: String
+    ) async throws -> String {
+        guard let idents = propertyIdents else { throw LogseqError.notBootstrapped }
+        let targetArgs = target.cliArgs
+        // Atomic: title block content + captured-reminder-id anchor in one upsert.
+        let createResult = try await run(
+            ["upsert", "block", "-g", graph] + targetArgs + [
+            "--content", title,
+            "--update-properties", "{:\(idents.capturedReminderId) \"\(capturedReminderExtId)\"}",
+            "--output", "json"
+        ])
+        let topUUID = try await extractCreatedUUID(from: createResult, context: "note title")
+        // Append each paragraph as a nested child block, in order. NOT try? — a failed
+        // child should surface; the anchored title block prevents a duplicate re-import.
+        for paragraph in paragraphs {
+            _ = try await run([
+                "upsert", "block", "-g", graph,
+                "--target-uuid", topUUID,
+                "--content", paragraph,
+                "--output", "json"
+            ])
+        }
+        return topUUID
     }
 
     // MARK: - Shell execution

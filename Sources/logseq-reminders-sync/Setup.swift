@@ -14,6 +14,10 @@ enum Setup {
         "Canceled": "Logseq Canceled"
     ]
 
+    /// Display title for the one-way notes-import list. NOT a status list — reminders
+    /// here are imported into Logseq as plain notes (see SyncEngine `.freshNote`).
+    static let notesListTitle = "Logseq Notes"
+
     // MARK: - First-run setup
 
     static func run() async throws {
@@ -81,6 +85,10 @@ enum Setup {
             statusLists[status] = Config.ListEntry(id: id, title: title)
             print("  ✓ \(title)")
         }
+        // The sixth list: one-way notes import (reused by title, like the status lists).
+        let notesId = try await store.findOrCreateList(title: notesListTitle)
+        let notesEntry = Config.ListEntry(id: notesId, title: notesListTitle)
+        print("  ✓ \(notesListTitle)")
         print("")
 
         // 6. Write config (preserving existing scalar settings on a same-graph re-run).
@@ -102,12 +110,14 @@ enum Setup {
                 syncDates: existing.syncDates,
                 syncPriority: existing.syncPriority,
                 gateForceFullRunMinutes: existing.gateForceFullRunMinutes,
-                logseqCliPath: cliPath
+                logseqCliPath: cliPath,
+                notesList: notesEntry
             )
         } else {
             let inboxTitle = promptInboxDestination(current: nil)
             newConfig = Config.makeDefault(
                 graph: graph, statusLists: statusLists, logseqCliPath: cliPath,
+                notesList: notesEntry,
                 journalInboxTitle: inboxTitle)
         }
         try newConfig.save()
@@ -178,9 +188,9 @@ enum Setup {
 
             // 4. Confirm. EOF / anything but y/yes aborts — nothing destroyed yet.
             guard Prompt.confirm("""
-                This will DELETE every reminder in the 5 managed lists, remove sync markers
-                from graph '\(oldGraph)', reset sync state, and switch to '\(newGraph)'.
-                Continue?
+                This will DELETE every reminder in the managed Logseq lists (the five status
+                lists and "\(notesListTitle)"), remove sync markers from graph '\(oldGraph)',
+                reset sync state, and switch to '\(newGraph)'. Continue?
                 """) else {
                 print("Aborted — no changes made.")
                 if hadAgent { LaunchdAgent.bootstrap() }
@@ -189,7 +199,7 @@ enum Setup {
 
             // 5. Empty the managed lists (incomplete + completed, unbounded).
             destructionBegan = true
-            print("Emptying the 5 managed lists…")
+            print("Emptying the managed Logseq lists…")
             try await store.emptyManagedLists(config: config)
 
             // 6. Verify the empty before flipping config.
@@ -216,7 +226,7 @@ enum Setup {
             print("""
 
             Switched to '\(newGraph)'.
-              • Emptied the 5 managed lists
+              • Emptied the managed Logseq lists (5 status + notes)
               • Cleared \(cleared) sync marker(s) from '\(oldGraph)'
               • Reset sync state
             """)

@@ -3,8 +3,8 @@ import SyncCore
 
 @main
 struct App {
-    // BUILD 31 (dateMergeAction: bundle date+field into SourcedDate so it fits the 6-param lint limit)
-    static let buildVersion = "31"
+    // BUILD 33 (one-way "Logseq Notes" import: title→top block, paragraphs→children, complete-after-import; CaptureTarget.cliArgs dedup)
+    static let buildVersion = "33"
     static let appVersion = "0.1.0"
 
     static func main() async throws {

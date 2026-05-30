@@ -324,4 +324,40 @@ struct MapperTests {
         #expect(item?.name == "block-id")
         #expect(item?.value == uuid)
     }
+
+    // MARK: - splitNoteParagraphs (note import)
+
+    @Test func splitNoteParagraphsNilIsEmpty() {
+        #expect(Mapper.splitNoteParagraphs(nil) == [])
+    }
+
+    @Test func splitNoteParagraphsEmptyIsEmpty() {
+        #expect(Mapper.splitNoteParagraphs("") == [])
+    }
+
+    @Test func splitNoteParagraphsWhitespaceOnlyIsEmpty() {
+        // Trim-then-drop ordering: whitespace and blank lines yield no blocks.
+        #expect(Mapper.splitNoteParagraphs("  \n\n  ") == [])
+    }
+
+    @Test func splitNoteParagraphsSingleLineNoNewline() {
+        #expect(Mapper.splitNoteParagraphs("a") == ["a"])
+    }
+
+    @Test func splitNoteParagraphsDropsBlankLines() {
+        #expect(Mapper.splitNoteParagraphs("first\n\nsecond\n\n\nthird") == ["first", "second", "third"])
+    }
+
+    @Test func splitNoteParagraphsHandlesCRLF() {
+        #expect(Mapper.splitNoteParagraphs("one\r\ntwo\r\nthree") == ["one", "two", "three"])
+    }
+
+    @Test func splitNoteParagraphsTrimsEachParagraph() {
+        #expect(Mapper.splitNoteParagraphs("  padded  \n\t tabbed \t") == ["padded", "tabbed"])
+    }
+
+    @Test func splitNoteParagraphsPreservesOrderAndDuplicates() {
+        // Two identical paragraphs stay as two entries (order + dup preserved).
+        #expect(Mapper.splitNoteParagraphs("dup\ndup\nlast") == ["dup", "dup", "last"])
+    }
 }

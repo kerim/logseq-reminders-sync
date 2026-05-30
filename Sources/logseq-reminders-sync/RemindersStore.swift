@@ -14,6 +14,10 @@ actor RemindersStore {
     private let store = EKEventStore()
     /// Keyed by Logseq status name ("Doing", "Todo", etc.)
     private var calendars: [String: EKCalendar] = [:]
+    /// The optional "Logseq Notes" list, when configured and present. Resolved alongside
+    /// the status lists but kept separate — notes are imported one-way, never routed by
+    /// status. `EKCalendar` stays inside the actor (never escapes).
+    private var notesCalendar: EKCalendar?
 
     // MARK: - Authorization
 
@@ -55,6 +59,22 @@ actor RemindersStore {
             )
         }
         calendars = resolved
+
+        // Resolve the OPTIONAL "Logseq Notes" list. Unlike the five status lists, a
+        // missing notes list must NOT break sync — warn and leave it nil. Always
+        // (re)assign so a re-resolve after the list is dropped can't leave a stale value.
+        if let entry = config.notesList {
+            if let cal = allCals.first(where: { $0.calendarIdentifier == entry.id })
+                ?? allCals.first(where: { $0.title == entry.title }) {
+                notesCalendar = cal
+            } else {
+                notesCalendar = nil
+                fputs("WARN: notes list \"\(entry.title)\" (id: \(entry.id)) not found " +
+                      "— note import disabled this run.\n", stderr)
+            }
+        } else {
+            notesCalendar = nil
+        }
     }
 
     /// All reminder calendars (for diagnostic --dump-reminders).
@@ -143,7 +163,11 @@ actor RemindersStore {
     }
 
     private func resolvedCalendars() -> [EKCalendar] {
-        Array(calendars.values)
+        var cals = Array(calendars.values)
+        // Include the notes list in fetch scope (fetchIncomplete/fetchCompleted) AND the
+        // change-signal, so adding a note triggers a sync pass without the 60-min backstop.
+        if let notesCalendar { cals.append(notesCalendar) }
+        return cals
     }
 
     private func fetch(predicate: NSPredicate) async throws -> [ReminderSnapshot] {
@@ -302,8 +326,14 @@ actor RemindersStore {
         return try await managedReminderLocalIds(cals).count
     }
 
+    /// Calendars that `switch-graph` empties + verifies. This is the ONLY place the notes
+    /// list is treated as "managed": both `emptyManagedLists` and `countRemaining` go
+    /// through here, so they stay symmetric. `Config.managedListIds` itself is left
+    /// notes-free (notes must not be routed by status / adopted as mirror tasks).
     private func managedCalendars(config: Config) -> [EKCalendar] {
-        store.calendars(for: .reminder).filter { config.managedListIds.contains($0.calendarIdentifier) }
+        var ids = config.managedListIds
+        if let notesId = config.notesListId { ids.insert(notesId) }
+        return store.calendars(for: .reminder).filter { ids.contains($0.calendarIdentifier) }
     }
 
     /// All localIds (incomplete + completed, unbounded) across the given calendars.

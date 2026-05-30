@@ -166,6 +166,20 @@ public enum Mapper {
         childTitlesPlainText.joined(separator: "\n")
     }
 
+    // MARK: - Note import (Reminders → Logseq, one-way)
+
+    /// Split an Apple Reminders note body into paragraph blocks for one-way note import.
+    /// Each newline-delimited paragraph is trimmed; blank / whitespace-only lines are
+    /// dropped. Handles `\n`, `\r\n`, and bare `\r`. Returns `[]` for nil / empty /
+    /// whitespace-only input.
+    public static func splitNoteParagraphs(_ notes: String?) -> [String] {
+        guard let notes else { return [] }
+        return notes
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
     // MARK: - Logseq deep link
 
     /// Build a Logseq deep link to a block: `logseq://graph/<graph>?block-id=<uuid>`.
