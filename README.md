@@ -5,6 +5,7 @@
 - It offers true two-way sync, but **only for metadata**: *completion*, *status markers*, *priority*, and *due dates*. 
 
 - The title and notes fields are only **synced in one direction**. Logseq remains the *sole source of truth*, and *markdown is stripped* on importing to Reminders. The only exception is when you **create new tasks** in Reminders. 
+- It also offers **one-way note capture**: a dedicated *Logseq Notes* list imports reminders into Logseq as plain notes (not tasks). See [Capturing notes](#capturing-notes-one-way).
 - It runs on a schedule that you setup on install. You can also invoke a manual sync.
 
 > Requires **macOS 14 (Sonoma) or later** and the **`logseq` CLI** (v2, only available with the new DB version of Logseq)
@@ -17,7 +18,7 @@ Only tasks with a priority of **Urgent, High, or Medium** sync. A task with no p
 
 ### Each status marker has its own list
 
-There are five Reminders lists, one for each Logseq status:
+There are five **status** lists, one for each Logseq status — plus a sixth **Logseq Notes** list for one-way note capture, described in [Capturing notes](#capturing-notes-one-way) below.
 
 | Logseq status | Reminders list |
 | --- | --- | 
@@ -130,7 +131,7 @@ Config lives at `~/.logseq-reminders-sync/config.json` (created by `setup`). Fie
 | Field | Meaning |
 |-------|---------|
 | `graph` | The Logseq graph name to sync. |
-| `statusLists` | Map of status → `{id, title}` for each of the 5 lists. Keys are canonical statuses (`Backlog`, `Todo`, `Doing`, `In Review`, `Canceled`). |
+| `statusLists` | Map of status → `{id, title}` for each of the 5 status lists. Keys are canonical statuses (`Backlog`, `Todo`, `Doing`, `In Review`, `Canceled`). The sixth **Logseq Notes** list is configured separately via `notesList` (below). |
 | `journalInboxTitle` | Where newly-adopted reminders land on today's journal page. Omit (or set to `null`) to place tasks at the **top level** of the journal; set to a block title (e.g. `"📥 Inbox"`) to nest them under that sub-block. Configured via `setup`. |
 | `notesList` | The **Logseq Notes** list (`{id, title}`) used for one-way note capture. Created by `setup`. Absent in configs predating this feature — when absent, note capture is simply inactive. |
 | `conflictPolicy` | Conflict resolution strategy (`mostRecentWins`). |
