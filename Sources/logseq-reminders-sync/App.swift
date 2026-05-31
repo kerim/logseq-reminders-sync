@@ -3,8 +3,8 @@ import SyncCore
 
 @main
 struct App {
-    // BUILD 35 (preserve shared web URL as markdown link on import; bare URL destinations, no angle brackets)
-    static let buildVersion = "35"
+    // BUILD 36 (fix silent try? swallowing on un-complete and title/notes sync writes)
+    static let buildVersion = "36"
     static let appVersion = "0.1.0"
 
     static func main() async throws {

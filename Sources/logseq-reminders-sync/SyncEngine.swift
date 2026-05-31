@@ -191,7 +191,7 @@ struct SyncEngine {
             if logseqDone && !snap.isCompleted {
                 try await reminders.completeReminder(localId: snap.localId)
             } else if !logseqDone && snap.isCompleted {
-                try? await reminders.updateReminder(localId: snap.localId, isCompleted: false)
+                try await reminders.updateReminder(localId: snap.localId, isCompleted: false)
             }
             rebuiltLocalIds.insert(snap.localId)
         }
@@ -413,7 +413,7 @@ struct SyncEngine {
                 blockTitle: block.title, childTitles: childTitles)
             let notesHash = Mapper.hashNotes(newNotes)
             if newTitle != updated.lastTitle || notesHash != updated.lastNotesHash {
-                try? await reminders.updateReminder(
+                try await reminders.updateReminder(
                     localId: updated.reminderLocalId, title: newTitle, notes: newNotes)
                 updated.lastTitle = newTitle
                 updated.lastNotesHash = notesHash
