@@ -4,6 +4,8 @@
 
 - It offers true two-way sync, but **only for metadata**: *completion*, *status markers*, *priority*, and *due dates*. 
 
+- Every Reminder has a URL that will open the original Logseq task block in the Desktop or iOS app.
+
 - The title and notes fields are only **synced in one direction**. Logseq remains the *sole source of truth*, and *markdown is stripped* on importing to Reminders. (Tasks can only be deleted in Logseq.) The only exception is when you **create new tasks** in Reminders (and those get "owned" by Logseq after they are synced). 
 - It also offers **one-way note capture**: a dedicated *Logseq Notes* list imports reminders into Logseq as plain notes (not tasks). See [Capturing notes](#capturing-notes-one-way).
 - It runs on a schedule that you setup on install. You can also invoke a manual sync.
