@@ -43,7 +43,7 @@ openssl req -newkey rsa:2048 -nodes \
     -config "$TMP/codesign.cnf" 2>/dev/null
 
 TMPPASS=$(openssl rand -hex 16)
-openssl pkcs12 -legacy -export \
+openssl pkcs12 -export \
     -out     "$TMP/cert.p12" \
     -inkey   "$TMP/key.pem" \
     -in      "$TMP/cert.pem" \
