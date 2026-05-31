@@ -491,7 +491,14 @@ struct SyncEngine {
         // ── Step 7: Adopt fresh reminders as mirror pairs ─────────────────────
         // New model: a reminder created directly in one of the 5 managed lists
         // becomes a live mirror pair (not a one-shot capture+complete).
+        // captureTarget is stable per pass; resolve lazily once, shared with Step 7.5.
         let knownCapExtIds = Set(state.captures.map { $0.reminderExtId })
+        var captureTarget: CaptureTarget?
+        func resolvedCaptureTarget() async throws -> CaptureTarget {
+            if let t = captureTarget { return t }
+            let t = try await logseq.todaysCaptureTarget(inboxTitle: config.journalInboxTitle)
+            captureTarget = t; return t
+        }
         for (snap, cls) in classified {
             guard case .fresh = cls else { continue }
             // Skip if already recorded in state (old captured-reminder-id path)
@@ -502,8 +509,7 @@ struct SyncEngine {
             guard let statusForList = config.status(forListId: snap.listId) else { continue }
 
             logger.log("Adopting new reminder as mirror: \(snap.title.prefix(60))")
-            let captureTarget = try await logseq.todaysCaptureTarget(
-                inboxTitle: config.journalInboxTitle)
+            let target = try await resolvedCaptureTarget()
 
             // Priority: carry from reminder; if none, default to Medium (Option 1).
             let capturedPriority: LogseqPriority?
@@ -513,11 +519,15 @@ struct SyncEngine {
                 capturedPriority = nil
             }
 
+            // Read the reminder's URL field before writeBacklink overwrites it.
+            let capturedURL = await reminders.readURLAttachment(localId: snap.localId)
+            let content = Mapper.linkifyImportedTitle(title: snap.title, url: capturedURL)
+
             // Write reminder-id ATOMICALLY in the block creation upsert (not a separate call).
             // Status matches the list the reminder was created in.
             let taskUUID = try await logseq.createCaptureTask(
-                target: captureTarget,
-                title: snap.title,
+                target: target,
+                title: content,
                 reminderExtId: snap.extId,
                 status: statusForList,
                 priority: capturedPriority)
@@ -555,7 +565,7 @@ struct SyncEngine {
                 lastCompleted: false,
                 lastLogseqUpdated: 0,  // fresh block; will update on next pass
                 lastReminderMod: freshSnap.lastModified.map { ms($0) },
-                lastTitle: snap.title,
+                lastTitle: Mapper.plainText(content, pageTitles: [:]),
                 lastNotesHash: Mapper.hashNotes(""),
                 lastDueDateMs: config.syncDates ? dueDateMs : nil,
                 lastDueSource: config.syncDates ? .scheduled : nil,
@@ -564,24 +574,20 @@ struct SyncEngine {
         }
 
         // ── Step 7.5: Import "Logseq Notes" reminders one-way ─────────────────
-        // A reminder in the notes list becomes a plain Logseq note: title → top-level
-        // block, body paragraphs → nested children. NOT a #Task, never paired, never
-        // synced back. Idempotency: the captured-reminder-id anchor (caught as
-        // .alreadyIngested next pass) plus a CaptureRecord. Deleting the reminder later
-        // can't touch the note — there is no pair to drive any cascade.
+        // title → top block, body paragraphs → children. NOT a #Task, never paired.
+        // Idempotency: captured-reminder-id anchor + CaptureRecord; no cascade on delete.
         for (snap, cls) in classified {
             guard case .freshNote = cls else { continue }
             if knownCapExtIds.contains(snap.extId) { continue }     // parity with Step 7
             if captureUUIDForExtId[snap.extId] != nil { continue }  // already anchored
 
             logger.log("Importing note: \(snap.title.prefix(60))")
-            let captureTarget = try await logseq.todaysCaptureTarget(
-                inboxTitle: config.journalInboxTitle)
-
+            let noteURL = await reminders.readURLAttachment(localId: snap.localId)
+            let noteContent = Mapper.linkifyImportedTitle(title: snap.title, url: noteURL)
             let paragraphs = Mapper.splitNoteParagraphs(snap.notes)
             let topUUID = try await logseq.createNote(
-                target: captureTarget,
-                title: snap.title,
+                target: try await resolvedCaptureTarget(),
+                title: noteContent,
                 paragraphs: paragraphs,
                 capturedReminderExtId: snap.extId)
 

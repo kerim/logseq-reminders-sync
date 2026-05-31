@@ -360,4 +360,98 @@ struct MapperTests {
         // Two identical paragraphs stay as two entries (order + dup preserved).
         #expect(Mapper.splitNoteParagraphs("dup\ndup\nlast") == ["dup", "dup", "last"])
     }
+
+    // MARK: - linkifyImportedTitle (forward-output tests)
+
+    @Test func linkifyNilUrlReturnsTitle() {
+        #expect(Mapper.linkifyImportedTitle(title: "My Page", url: nil) == "My Page")
+    }
+
+    @Test func linkifyEmptyUrlReturnsTitle() {
+        #expect(Mapper.linkifyImportedTitle(title: "My Page", url: "") == "My Page")
+    }
+
+    @Test func linkifyWhitespaceUrlReturnsTitle() {
+        #expect(Mapper.linkifyImportedTitle(title: "My Page", url: "   ") == "My Page")
+    }
+
+    @Test func linkifyLogseqUrlReturnsTitle() {
+        #expect(Mapper.linkifyImportedTitle(title: "My Page", url: "logseq://graph/mygraph?block-id=abc") == "My Page")
+    }
+
+    @Test func linkifyLogseqUrlCaseInsensitive() {
+        #expect(Mapper.linkifyImportedTitle(title: "My Page", url: "LOGSEQ://graph/mygraph?block-id=abc") == "My Page")
+    }
+
+    @Test func linkifyHttpUrlBuildsLink() {
+        #expect(Mapper.linkifyImportedTitle(title: "Example", url: "https://example.com") == "[Example](https://example.com)")
+    }
+
+    @Test func linkifyEmptyTitleReturnsBareUrl() {
+        #expect(Mapper.linkifyImportedTitle(title: "", url: "https://example.com") == "https://example.com")
+    }
+
+    @Test func linkifyTitleWithBracketEscaped() {
+        #expect(Mapper.linkifyImportedTitle(title: "Foo [Draft]", url: "https://example.com") == "[Foo \\[Draft\\]](https://example.com)")
+    }
+
+    @Test func linkifyTitleWithHashEscaped() {
+        #expect(Mapper.linkifyImportedTitle(title: "Issue #42", url: "https://example.com") == "[Issue \\#42](https://example.com)")
+    }
+
+    @Test func linkifyTitleWithBackslashEscapedFirst() {
+        #expect(Mapper.linkifyImportedTitle(title: "foo\\bar", url: "https://example.com") == "[foo\\\\bar](https://example.com)")
+    }
+
+    // MARK: - linkifyImportedTitle (round-trip tests)
+    // Invariant: Mapper.plainText(Mapper.linkifyImportedTitle(title, url), pageTitles: [:]) == title
+
+    @Test func linkifyRoundTripPlainUrl() {
+        let url = "https://example.com/path"
+        let title = "My Page"
+        let content = Mapper.linkifyImportedTitle(title: title, url: url)
+        #expect(Mapper.plainText(content, pageTitles: [:]) == title)
+    }
+
+    @Test func linkifyRoundTripUrlWithParens() {
+        let url = "https://en.wikipedia.org/wiki/Foo_(bar)"
+        let title = "Foo (bar)"
+        let content = Mapper.linkifyImportedTitle(title: title, url: url)
+        #expect(Mapper.plainText(content, pageTitles: [:]) == title)
+    }
+
+    @Test func linkifyRoundTripUrlWithPercentEncodedChars() {
+        let url = "https://example.com/path%28with%29parens"
+        let title = "Encoded Parens"
+        let content = Mapper.linkifyImportedTitle(title: title, url: url)
+        #expect(Mapper.plainText(content, pageTitles: [:]) == title)
+    }
+
+    @Test func linkifyRoundTripUrlWithQueryString() {
+        let url = "https://www.youtube.com/watch?v=VHeuVeIxVkA"
+        let title = "A Physical Therapist Reviews: Viral Abs Workout!"
+        let content = Mapper.linkifyImportedTitle(title: title, url: url)
+        #expect(Mapper.plainText(content, pageTitles: [:]) == title)
+    }
+
+    @Test func linkifyRoundTripTitleWithBracket() {
+        let url = "https://example.com"
+        let title = "Foo [Draft]"
+        let content = Mapper.linkifyImportedTitle(title: title, url: url)
+        #expect(Mapper.plainText(content, pageTitles: [:]) == title)
+    }
+
+    @Test func linkifyRoundTripTitleWithHash() {
+        let url = "https://example.com"
+        let title = "Issue #42"
+        let content = Mapper.linkifyImportedTitle(title: title, url: url)
+        #expect(Mapper.plainText(content, pageTitles: [:]) == title)
+    }
+
+    @Test func linkifyRoundTripTitleWithBackslash() {
+        let url = "https://example.com"
+        let title = "foo\\bar"
+        let content = Mapper.linkifyImportedTitle(title: title, url: url)
+        #expect(Mapper.plainText(content, pageTitles: [:]) == title)
+    }
 }

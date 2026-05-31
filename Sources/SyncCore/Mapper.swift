@@ -68,6 +68,28 @@ public enum Mapper {
         return plainTextify(stripped)
     }
 
+    /// Build Logseq block content for an imported reminder. If `url` is a usable
+    /// web URL, returns `[escapedTitle](<url>)`; otherwise returns `title` unchanged.
+    ///
+    /// A `logseq:` URL (our own backlink) is treated as "no user URL" so a
+    /// re-import never wraps the backlink. `[`, `]`, `#`, and `\` in the title are
+    /// backslash-escaped (backslash first) so the link label can't break the
+    /// markdown parser and `#token` isn't parsed as a Logseq tag.
+    public static func linkifyImportedTitle(title: String, url: String?) -> String {
+        guard let raw = url else { return title }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return title }
+        guard !trimmed.lowercased().hasPrefix("logseq:") else { return title }
+        guard !title.isEmpty else { return trimmed }
+
+        var label = title
+        label = label.replacingOccurrences(of: "\\", with: "\\\\")
+        label = label.replacingOccurrences(of: "[", with: "\\[")
+        label = label.replacingOccurrences(of: "]", with: "\\]")
+        label = label.replacingOccurrences(of: "#", with: "\\#")
+        return "[\(label)](\(trimmed))"
+    }
+
     // MARK: - Status mapping
 
     /// Only "Done" maps to the completed state in Reminders.

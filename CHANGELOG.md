@@ -1,5 +1,17 @@
 # Changelog
 
+## Build 35 — 2026-05-31
+
+### Added
+- **Shared web URLs survive import as clickable Markdown links.** When you share a web page into any of the managed Reminders lists (or the Logseq Notes list), the page title and URL are now turned into a Markdown link `[page title](page url)` in the imported Logseq block, instead of plain title text. For status-list reminders the reminder's URL field is still replaced by a Logseq backlink afterward (only one URL slot is available); the web URL is preserved inside Logseq as a live link. One-way note imports keep both the link and the original URL field.
+- `Mapper.linkifyImportedTitle(title:url:)` — pure helper that builds `[escapedTitle](url)`. Ignores nil, empty, whitespace, and `logseq:` URLs (case-insensitive prefix check). Backslash-escapes `\`, `[`, `]`, `#` in the label (backslash first) so the link label can't break the markdown parser and `#token` isn't tag-parsed by Logseq.
+- `RemindersStore.readURLAttachment(localId:)` — reads the private `REMURLAttachment` field (what Reminders.app shows) at capture time, before `writeBacklink` overwrites it.
+
+### Changed
+- `SyncPair.lastTitle` at adoption is now seeded from `Mapper.plainText(content, pageTitles: [:])` rather than `snap.title`. Since the newly-created block content is `[label](url)` with no `[[uuid]]` page refs, this equals exactly what Step 5's reconcile will recompute on the next pass — so no spurious title write occurs regardless of what characters the title contains.
+
+---
+
 ## Build 33 — 2026-05-30
 
 ### Added

@@ -222,6 +222,14 @@ actor RemindersStore {
         return Self.snapshot(from: item)
     }
 
+    /// Read the URL the user attached to a reminder (the field Reminders.app
+    /// displays), or nil if none / not found. Read at capture time so a shared
+    /// web URL survives import into Logseq.
+    func readURLAttachment(localId: String) -> String? {
+        guard let item = store.calendarItem(withIdentifier: localId) as? EKReminder else { return nil }
+        return LRSReadReminderURLAttachment(item)
+    }
+
     /// Write the Logseq backlink into the REMURLAttachment that Reminders.app
     /// displays in its URL field (via the private ReminderKit framework).
     @discardableResult

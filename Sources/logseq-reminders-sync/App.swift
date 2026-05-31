@@ -3,8 +3,8 @@ import SyncCore
 
 @main
 struct App {
-    // BUILD 33 (one-way "Logseq Notes" import: title→top block, paragraphs→children, complete-after-import; CaptureTarget.cliArgs dedup)
-    static let buildVersion = "33"
+    // BUILD 35 (preserve shared web URL as markdown link on import; bare URL destinations, no angle brackets)
+    static let buildVersion = "35"
     static let appVersion = "0.1.0"
 
     static func main() async throws {
