@@ -1,5 +1,19 @@
 # Changelog
 
+## Build 37 — 2026-06-02
+
+### Fixed
+- **Sync no longer fails to find today's journal page.** The tool was guessing the journal title from a hardcoded list of full month names ("June 2nd, 2026"), but Logseq stored the page as "Jun 2nd, 2026" — causing a `page-not-found` error on every Reminders→Logseq capture. The title is now looked up from the graph by date (`:block/journal-day`), which is format-agnostic and works regardless of how any user's graph formats journal titles.
+
+### Added
+- `JournalRenderer` (pure, unit-tested) — a longest-match tokenizer for date-fns/Unicode TR35 format strings that renders `"MMM do, yyyy"` → `"Jun 2nd, 2026"`. Handles full-month (`MMMM`), weekday (`EEE`/`EEEE`), ordinal day (`do`), quoted literals, and safely degrades to `nil` on unrecognized tokens. 15 Swift Testing unit tests cover all ordinal edges, timezone boundary, quoted literals, and the degrade path.
+- When no journal exists for today (scheduled sync fires before Logseq opens), the sync logs a clear message and skips only the affected capture — the rest of the pass completes and the baseline is saved. The skipped reminder retries on the next run.
+
+### Changed
+- Captures that fail to resolve today's journal page are now **skipped per-item** rather than aborting the entire sync pass. Previously, a single missing journal would silently drop all remaining captures *and* all baseline-persistence progress for that run.
+
+---
+
 ## Build 35 — 2026-05-31
 
 ### Added
