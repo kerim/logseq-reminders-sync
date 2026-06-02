@@ -1,5 +1,15 @@
 # Changelog
 
+## Build 38 — 2026-06-02
+
+### Fixed
+- **Checking a recurring task complete in Reminders now advances the Logseq task to its next scheduled date.** Previously, the sync would archive the reminder and drop the pair without ever telling Logseq the cycle was done — so the task stayed on its current date indefinitely. The sync now tells Logseq "done" (which causes Logseq to advance the date and reset the task to Todo), then reuses the same reminder by unchecking it and rolling its due date and list forward to match — identical to what happens when you complete the task inside Logseq.
+
+### Changed
+- Recurring task completion is now handled with a two-phase error structure. Phase A writes Done to Logseq; on failure it re-completes the reminder so the next sync pass retries automatically. Phase B rolls the reminder forward; on failure it degrades gracefully without re-completing, so the next pass's normal date/list merge reconciles without a second advance.
+
+---
+
 ## Build 37 — 2026-06-02
 
 ### Fixed
