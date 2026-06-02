@@ -3,8 +3,8 @@ import SyncCore
 
 @main
 struct App {
-    // BUILD 38 (recurring completion in Reminders advances Logseq + rolls reminder forward)
-    static let buildVersion = "38"
+    // BUILD 39 (update notifications: banner when a newer GitHub release exists)
+    static let buildVersion = "39"
     static let appVersion = "0.1.0"
 
     static func main() async throws {
@@ -25,6 +25,17 @@ struct App {
             // Config.load() so a clean machine doesn't fail.
             if args.contains("setup") || args.contains("--setup") {
                 try await Setup.run()
+                return
+            }
+
+            if args.contains("--check-update") {
+                let configDir = Config.configDir
+                let logDir = configDir.appendingPathComponent("log")
+                try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
+                let logger = RunLogger(logDirectory: logDir)
+                await UpdateNotifier.maybeCheck(configDir: configDir,
+                                                localBuildVersion: Self.buildVersion,
+                                                force: true, logger: logger)
                 return
             }
 
@@ -52,6 +63,10 @@ struct App {
 
             // Default / --once: run a single sync
             try await runOnce(config: config, force: args.contains("--force"))
+            await UpdateNotifier.maybeCheck(configDir: Config.configDir,
+                                            localBuildVersion: Self.buildVersion,
+                                            force: false,
+                                            logger: RunLogger(logDirectory: Config.configDir.appendingPathComponent("log")))
         } catch {
             fputs("Error: \(error.localizedDescription)\n", stderr)
             exit(1)
@@ -332,14 +347,17 @@ struct App {
           --help, -h         Print this help and exit
           --once             Run a single sync and exit (default)
           --force            Bypass the change gate and run a full sync pass
+          --check-update     Check GitHub for a newer release now and show a
+                             banner if one exists (ignores the 24h throttle)
           --dump-reminders   List reminders in the configured lists (diagnostic)
           --dump-tasks       List prioritized tasks in the configured graph (diagnostic)
           --backfill-links   Write the Logseq backlink into existing mirror
                              reminders' URL field (one-shot; writes, acquires lock)
 
-        Config: ~/.logseq-reminders-sync/config.json
-        State:  ~/.logseq-reminders-sync/state.json
-        Logs:   ~/.logseq-reminders-sync/log/
+        Config:        ~/.logseq-reminders-sync/config.json
+        State:         ~/.logseq-reminders-sync/state.json
+        Logs:          ~/.logseq-reminders-sync/log/
+        Update state:  ~/.logseq-reminders-sync/update-check.json
         """)
     }
 }

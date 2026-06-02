@@ -16,9 +16,9 @@ Designed to be triggered on a schedule (launchd / cron). First-time users run
 
 Three SPM targets:
 
-- **SyncCore** (library, `Sources/SyncCore/`) — pure data + transforms: `Config`, `SyncState`/`SyncPair`/`CaptureRecord`, `ReminderSnapshot`, `LogseqBlock`, `Mapper`, `StateStore`. No EventKit, no Process, no I/O beyond the state JSON file. This is what `Tests/SyncCoreTests/` exercises with Swift Testing.
+- **SyncCore** (library, `Sources/SyncCore/`) — pure data + transforms: `Config`, `SyncState`/`SyncPair`/`CaptureRecord`, `ReminderSnapshot`, `LogseqBlock`, `Mapper`, `StateStore`, `UpdateCheck`/`UpdateCheckStore`. No EventKit, no Process, no I/O beyond JSON files. This is what `Tests/SyncCoreTests/` exercises with Swift Testing.
 - **ReminderKitBridge** (Objective-C library, `Sources/ReminderKitBridge/`) — reaches Apple's private `ReminderKit` framework via runtime introspection to write/read the `REMURLAttachment` that Reminders.app displays in its URL field. The public `EKCalendarItem.url` is disconnected from that field (confirmed macOS 26). See the private-symbol inventory and repair guide at the top of `ReminderKitBridge.m`.
-- **logseq-reminders-sync** (executable, `Sources/logseq-reminders-sync/`) — everything that talks to the outside world: `App` (entry + CLI-path resolution), `SyncEngine` (the 3-way merge), `LogseqClient` (shells out to the `logseq` CLI), `RemindersStore` (actor over `EKEventStore`), `Setup` (the interactive `setup` / `switch-graph` flows + `Prompt` helpers), `LaunchdAgent` (the background-sync LaunchAgent), `Lockfile`, `RunLogger`. The Info.plist is embedded via `-sectcreate` linker flags so the CLI binary carries `NSRemindersFullAccessUsageDescription`.
+- **logseq-reminders-sync** (executable, `Sources/logseq-reminders-sync/`) — everything that talks to the outside world: `App` (entry + CLI-path resolution), `SyncEngine` (the 3-way merge), `LogseqClient` (shells out to the `logseq` CLI), `RemindersStore` (actor over `EKEventStore`), `Setup` (the interactive `setup` / `switch-graph` flows + `Prompt` helpers), `LaunchdAgent` (the background-sync LaunchAgent), `Lockfile`, `RunLogger`, `UpdateNotifier` (GitHub fetch + osascript banner + orchestrator). The Info.plist is embedded via `-sectcreate` linker flags so the CLI binary carries `NSRemindersFullAccessUsageDescription`.
 
 ## How the sync model works (the part that requires reading multiple files)
 
@@ -53,6 +53,7 @@ Both are interactive (stdin via `Prompt`) and mutate live state, so both **acqui
 
 The binary reads and writes only under `~/.logseq-reminders-sync/`:
 
+- `update-check.json` — `UpdateCheckState` (`lastCheck`, `lastNotifiedBuild`). Written by `UpdateNotifier.maybeCheck`. Pretty-printed, sorted keys, atomic writes — same pattern as `state.json`.
 - `config.json` — `graph`, `statusLists` (map from canonical status name to `{id, title}` for each of the 5 status lists), `journalInboxTitle` (optional string: if present, newly-adopted tasks land under a named sub-block of that title on the journal page; if absent or empty-string in JSON, tasks go to the top level of the journal page), `fallbackInboxPage`, `conflictPolicy`, `syncDates` (default `true` since build 29; reads legacy `syncDeadlines` if present), `syncPriority` (opt-out, default `true`), `gateForceFullRunMinutes` (default `60`), `logseqCliPath` (optional absolute path; written by `setup`), `notesList` (optional `{id, title}` for the one-way `Logseq Notes` import list; `nil` / absent for configs predating the notes feature (build 33), which makes the note-import flow inert — `encodeIfPresent` omits a nil so existing files stay unchanged). Decoded by `Config.load()`, written by `Config.save()`. **`Config` has hand-written `Codable`** (explicit `CodingKeys` + `init(from:)` + `encode(to:)`) — new fields must be wired into all three or they silently don't persist. Legacy keys `remindersListId`/`remindersListTitle`/`filterQueryFile` are silently accepted but ignored — migrate to `statusLists`.
 - `state.json` — `SyncState` (pairs + captures + lastRunDate). Pretty-printed, sorted keys, atomic writes.
 - `log/YYYY-MM-DD.log` — daily run log, also tee'd to stdout via `RunLogger`. `setup`'s launchd agent additionally writes `log/launchd.out.log` / `log/launchd.err.log`.
@@ -67,6 +68,8 @@ When debugging without mutating either side:
 - `--dump-tasks` — bootstraps the Logseq client, prints the resolved property idents, dumps prioritized tasks (Urgent/High/Medium, any status).
 
 These are read-only and skip the lockfile / state writes — useful for verifying config and Logseq CLI connectivity.
+
+- `--check-update` — immediately checks GitHub for a newer release (bypasses the 24h throttle) and shows a macOS notification banner if one exists. Works on an unconfigured machine (needs only `Config.configDir`). Pure update-state writes; does not touch sync state or acquire the lockfile.
 
 One maintenance flag *does* write:
 

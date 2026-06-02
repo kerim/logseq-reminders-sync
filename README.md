@@ -114,6 +114,18 @@ logseq-reminders-sync --once      # one sync pass (this is also the default with
 logseq-reminders-sync --force     # one pass, skipping the "did anything change?" gate
 ```
 
+### Update notifications
+
+Once a day, the sync quietly checks whether a newer release exists on GitHub. If one does, you get a macOS notification banner: "Build 40 is available (you have 39)." The check is throttled — it runs at most once every 24 hours and only nags you once per new version. It silently steps aside if the network is unavailable, so it never slows down or breaks a sync pass.
+
+To check immediately (bypasses the throttle):
+
+```fish
+logseq-reminders-sync --check-update
+```
+
+The notification is shown via `osascript`, so macOS attributes the banner to "Script Editor" rather than to the tool — that's expected. If Do Not Disturb or Focus is active, the banner may be suppressed; the log entry in `~/.logseq-reminders-sync/log/` still records that a newer build was found.
+
 ## Switching graphs
 
 To point the tool at a different Logseq graph:

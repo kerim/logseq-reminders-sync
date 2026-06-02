@@ -1,5 +1,15 @@
 # Changelog
 
+## Build 39 — 2026-06-02
+
+### Added
+- **Update notifications.** The tool now checks GitHub Releases once a day and shows a macOS notification banner when a newer build is available (e.g. "Build 40 is available (you have 39)."). The check is throttled to at most once per 24 hours, notifies at most once per newly-seen build, and silently steps aside if the network or GitHub is unavailable — it can never slow down or break a sync pass.
+- `--check-update` flag: immediately checks for a newer release, bypassing the 24-hour throttle. Always re-shows the banner if a newer build exists (useful for testing or manually confirming you're up to date).
+- `scripts/release.sh`: a `gh`-based helper that reads the current `buildVersion` from `App.swift`, extracts the matching `CHANGELOG.md` section, and publishes a GitHub release tagged `build-N`. Includes idempotency guard (aborts if the tag already exists) and anchored awk matching to avoid build-number prefix collisions.
+- `~/.logseq-reminders-sync/update-check.json`: small state file tracking the last check timestamp and last notified build. Siblings `state.json` and `config.json`.
+
+---
+
 ## Build 38 — 2026-06-02
 
 ### Fixed
