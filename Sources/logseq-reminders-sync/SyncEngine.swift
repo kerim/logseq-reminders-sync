@@ -278,14 +278,75 @@ struct SyncEngine {
             var updated = pair
 
             // ── F.2.2: Recurring-completed rotation ───────────────────────────
-            // Must run for EVERY in-filter pair (was wrongly gated on !isInFilter).
-            // Use the broader condition matching the existing code (line 243).
-            if block.isRecurring && (pair.lastCompleted || live.isCompleted) {
-                if !state.archivedExtIds.contains(pair.reminderExtId) {
-                    state.archivedExtIds.append(pair.reminderExtId)
+            // Fire only on live.isCompleted (not pair.lastCompleted) — the rebuild
+            // path seeds lastCompleted=true then uncompletes the reminder, so the
+            // old disjunct would spuriously fire on a user-idle task next pass.
+            if block.isRecurring && live.isCompleted {
+                logger.log("Recurring \(uuid.prefix(8))… completed in Reminders — advancing Logseq")
+
+                // Phase A: advance Logseq. Uncomplete first so a Done-write failure
+                // leaves a visible uncompleted reminder (re-fires next pass) rather
+                // than a completed reminder against an already-advanced block.
+                do {
+                    _ = try await reminders.uncompleteReminder(localId: pair.reminderLocalId)
+                    try await logseq.updateTaskStatus(blockUUID: uuid, status: "Done")
+                } catch {
+                    logger.log("WARN: Recurring \(uuid.prefix(8))… Phase-A failed (\(error)) — re-completing for retry")
+                    try? await reminders.completeReminder(localId: pair.reminderLocalId)
+                    continue  // pair unchanged; next pass sees live.isCompleted=true and retries
                 }
-                logger.log("Recurring \(uuid.prefix(8))… cycle complete — pair dropped, reminder archived")
-                pairsToRemove.insert(uuid); continue
+
+                // Phase A succeeded — Logseq has advanced. From here, never re-complete
+                // the reminder (that would double-advance next pass).
+                updated.lastCompleted = false
+
+                // Phase B: roll the reminder forward to the new date/list.
+                // Failures here are graceful — lastCompleted=false is already set,
+                // so the next pass's normal merge reconciles date/list without a second advance.
+                do {
+                    guard let fresh = try await logseq.fetchBlock(uuid: uuid),
+                          let newStatus = fresh.status,
+                          !Mapper.logseqStatusIsCompleted(newStatus) else {
+                        logger.log("Recurring \(uuid.prefix(8))… Phase-B: block nil/Done after advance — deferring to next pass")
+                        state.pairs[i] = updated; continue
+                    }
+
+                    // Move reminder to the list for the new status if it changed.
+                    var localId = pair.reminderLocalId
+                    if let targetListId = config.listId(forStatus: newStatus),
+                       live.listId != targetListId,
+                       let moved = try await reminders.moveReminder(
+                           localId: localId, toListId: targetListId) {
+                        updated.reminderLocalId = moved.localId
+                        updated.reminderExtId   = moved.extId
+                        localId = moved.localId
+                    }
+
+                    // Roll due date forward to the advanced date.
+                    let advancedMs = (fresh.deadline ?? fresh.scheduled).map { Int64($0) }
+                    if config.syncDates, let dueMs = advancedMs {
+                        try await reminders.setDueComponents(
+                            localId: localId, Mapper.epochMsToDueComponents(dueMs))
+                    }
+
+                    // Update baselines.
+                    updated.lastStatus = newStatus
+                    updated.lastOpenStatus = newStatus  // guard above ensures !isCompleted
+                    updated.lastLogseqUpdated = fresh.updatedAt
+                    updated.lastDueDateMs = config.syncDates ? advancedMs : nil
+                    updated.lastDueSource = config.syncDates
+                        ? Mapper.preferredDateField(deadline: fresh.deadline, scheduled: fresh.scheduled)
+                        : nil
+                    if let snap = await reminders.fetchSnapshot(localId: localId) {
+                        updated.lastReminderMod = snap.lastModified.map { ms($0) }
+                    }
+                    logger.log("Recurring \(uuid.prefix(8))… rolled forward to \(newStatus)")
+
+                } catch {
+                    logger.log("WARN: Recurring \(uuid.prefix(8))… Phase-B failed (\(error)) — next pass will reconcile")
+                }
+
+                state.pairs[i] = updated; continue
             }
 
             // ── F.2.3: Priority-loss teardown ─────────────────────────────────

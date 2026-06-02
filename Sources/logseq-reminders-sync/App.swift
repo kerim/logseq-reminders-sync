@@ -3,8 +3,8 @@ import SyncCore
 
 @main
 struct App {
-    // BUILD 37 (fix journal page lookup: resolve by journal-day instead of guessed name)
-    static let buildVersion = "37"
+    // BUILD 38 (recurring completion in Reminders advances Logseq + rolls reminder forward)
+    static let buildVersion = "38"
     static let appVersion = "0.1.0"
 
     static func main() async throws {
