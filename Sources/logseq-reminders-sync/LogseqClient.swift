@@ -449,32 +449,163 @@ struct LogseqClient {
 
     // MARK: - Journal / capture ingest
 
-    static func journalPageName(for date: Date = Date()) -> String {
-        let cal = Calendar(identifier: .gregorian)
-        let comps = cal.dateComponents([.year, .month, .day], from: date)
-        let day = comps.day!
-        let month = ["January","February","March","April","May","June",
-                     "July","August","September","October","November","December"][comps.month! - 1]
-        let suffix: String
-        switch day {
-        case 1, 21, 31: suffix = "st"
-        case 2, 22: suffix = "nd"
-        case 3, 23: suffix = "rd"
-        default: suffix = "th"
-        }
-        return "\(month) \(day)\(suffix), \(comps.year!)"
-    }
-
     /// Resolve where a journal capture should land *today*, given the inbox config.
     /// With `journalInboxTitle` set, the target is a (find-or-created) named sub-block;
     /// otherwise it's the journal page top level. Shared by the adopt (Step 7) and
     /// note-import (Step 7.5) paths so the placement rule lives in exactly one place.
     func todaysCaptureTarget(inboxTitle: String?) async throws -> CaptureTarget {
-        let journalPage = Self.journalPageName()
+        let journalPage = try await resolveJournalPageTitle()
         guard let inboxTitle else { return .journalPage(name: journalPage) }
         let inboxUUID = try await findOrCreateInboxBlock(
             journalPage: journalPage, inboxTitle: inboxTitle)
         return .inboxBlock(uuid: inboxUUID)
+    }
+
+    /// Resolve the journal page title for today by looking it up in the graph by
+    /// `:block/journal-day` — format-agnostic and works for any user's date format.
+    /// If no journal exists for that day, attempts to create one; falls back to
+    /// throwing `LogseqError.journalNotFound` so the capture is skipped per-item.
+    func resolveJournalPageTitle(for date: Date = Date()) async throws -> String {
+        // Local calendar throughout — matching how Logseq keys journal-day by civil date.
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone.current
+        cal.locale = Locale(identifier: "en_US_POSIX")
+
+        let day = journalDay(for: date, calendar: cal)
+
+        // Query returns [[title, uuid]] for all journals matching that day.
+        let result = try await query("""
+            [:find ?title ?uuid
+             :where [?p :block/journal-day \(day)]
+                    [?p :block/title ?title]
+                    [?p :block/uuid ?uuid]]
+            """)
+
+        guard let rows = result as? [[Any]] else {
+            throw LogseqError.unexpectedShape(
+                "journal-day \(day) query: \(String(describing: result).prefix(200))")
+        }
+
+        switch rows.count {
+        case 1:
+            guard let title = rows[0][0] as? String else {
+                throw LogseqError.unexpectedShape("journal-day \(day) row: \(rows[0])")
+            }
+            return title
+
+        case let n where n > 1:
+            // Multiple journals for this day — unexpected graph state.
+            // Prefer the canonical UUID; never create a third journal.
+            let canonical = canonicalJournalUUID(for: date, calendar: cal)
+            let preferred = rows.first(where: { ($0[1] as? String) == canonical }) ?? rows[0]
+            let title = (preferred[0] as? String) ?? (rows[0][0] as? String) ?? ""
+            logger?.log("WARN: \(n) journals found for \(day) — using '\(title)', not creating")
+            return title
+
+        default:
+            // Zero rows — journal is genuinely missing for this date.
+            return try await createJournalIfPossible(for: date, day: day, calendar: cal)
+        }
+    }
+
+    /// Deterministic Logseq journal UUID: 00000001-YYYY-MMDD-0000-000000000000.
+    private func canonicalJournalUUID(for date: Date, calendar: Calendar) -> String {
+        let comps = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(format: "00000001-%04d-%02d%02d-0000-000000000000",
+                      comps.year!, comps.month!, comps.day!)
+    }
+
+    /// Attempt to create a journal for `date`. Validates the renderer against
+    /// existing journals before creating. Throws `journalNotFound` on any failure
+    /// so the per-item catch in SyncEngine skips just this capture.
+    private func createJournalIfPossible(for date: Date, day: Int, calendar: Calendar) async throws -> String {
+        let format = await fetchJournalTitleFormat()
+
+        guard await validateRenderer(format: format, calendar: calendar) else {
+            let fallback = fallbackDateLabel(for: date, calendar: calendar)
+            throw LogseqError.journalNotFound(
+                "Today's journal (\(fallback)) doesn't exist yet and the renderer " +
+                "couldn't be validated — open Logseq once to create it.")
+        }
+
+        guard let title = renderJournalTitle(date: date, format: format, calendar: calendar) else {
+            throw LogseqError.journalNotFound(
+                "Today's journal date format '\(format)' is not fully supported. " +
+                "Open Logseq to create the journal page.")
+        }
+
+        // PoC required before shipping create: confirm which CLI command produces a
+        // proper journal (journal-day + Journal tag). Implemented below after PoC.
+        logger?.log("INFO: journal '\(title)' (\(day)) is missing — auto-create not yet implemented. Open Logseq to create it.")
+        throw LogseqError.journalNotFound(
+            "Today's journal page '\(title)' does not exist yet — open Logseq " +
+            "once and it will sync on the next run.")
+    }
+
+    /// Fetch the graph's journal title format setting.
+    /// Falls back to "MMM do, yyyy" (the Logseq DB default) if the property is absent.
+    private func fetchJournalTitleFormat() async -> String {
+        guard let result = try? await query(
+            "[:find ?fmt :where [?e :logseq.property.journal/title-format ?fmt]]"
+        ), let rows = result as? [[Any]],
+           let fmt = rows.first?[0] as? String, !fmt.isEmpty else {
+            return "MMM do, yyyy"
+        }
+        return fmt
+    }
+
+    /// Self-validate the renderer: render the most recent journal's date and compare
+    /// to its stored title. Returns false if mismatch, or if no journals exist.
+    private func validateRenderer(format: String, calendar: Calendar) async -> Bool {
+        guard let maxResult = try? await query(
+            "[:find (max ?d) :where [?p :block/journal-day ?d]]"
+        ), let maxRows = maxResult as? [[Any]],
+           let maxRow = maxRows.first,
+           let rawDay = maxRow.first,
+           let maxDay = jsonInt64(rawDay).map({ Int($0) }) else {
+            logger?.log("Journal renderer: no existing journals — cannot validate, skipping create")
+            return false
+        }
+
+        guard let titleResult = try? await query(
+            "[:find ?title :where [?p :block/journal-day \(maxDay)] [?p :block/title ?title]]"
+        ), let titleRows = titleResult as? [[Any]],
+           let storedTitle = titleRows.first?[0] as? String else {
+            logger?.log("Journal renderer: cannot fetch title for \(maxDay) — skipping create")
+            return false
+        }
+
+        var comps = DateComponents()
+        comps.year = maxDay / 10000
+        comps.month = (maxDay % 10000) / 100
+        comps.day = maxDay % 100
+        guard let maxDate = calendar.date(from: comps) else {
+            logger?.log("Journal renderer: cannot reconstruct date for \(maxDay) — skipping create")
+            return false
+        }
+
+        guard let rendered = renderJournalTitle(date: maxDate, format: format, calendar: calendar) else {
+            logger?.log("Journal renderer: unsupported format '\(format)' — skipping create")
+            return false
+        }
+
+        if rendered != storedTitle {
+            logger?.log(
+                "Journal renderer: mismatch for \(maxDay) — rendered '\(rendered)' " +
+                "vs stored '\(storedTitle)' — skipping create")
+            return false
+        }
+
+        return true
+    }
+
+    private func fallbackDateLabel(for date: Date, calendar: Calendar) -> String {
+        let df = DateFormatter()
+        df.locale = Locale(identifier: "en_US_POSIX")
+        df.calendar = calendar
+        df.timeZone = calendar.timeZone
+        df.dateFormat = "MMM d, yyyy"
+        return df.string(from: date)
     }
 
     /// Find existing Inbox block or create it on the journal page. Returns the block UUID.
@@ -717,6 +848,7 @@ enum LogseqError: Error, LocalizedError {
     case cliFailed(args: String, status: Int32, output: String)
     case jsonParse(String)
     case unexpectedShape(String)
+    case journalNotFound(String)
 
     var errorDescription: String? {
         switch self {
@@ -726,6 +858,7 @@ enum LogseqError: Error, LocalizedError {
             return "logseq CLI failed (exit \(status)) for '\(args)': \(output)"
         case .jsonParse(let raw): return "JSON parse error: \(raw.prefix(200))"
         case .unexpectedShape(let raw): return "Unexpected CLI response shape: \(raw.prefix(200))"
+        case .journalNotFound(let msg): return msg
         }
     }
 }

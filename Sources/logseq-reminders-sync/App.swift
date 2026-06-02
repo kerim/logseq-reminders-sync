@@ -3,8 +3,8 @@ import SyncCore
 
 @main
 struct App {
-    // BUILD 36 (fix silent try? swallowing on un-complete and title/notes sync writes)
-    static let buildVersion = "36"
+    // BUILD 37 (fix journal page lookup: resolve by journal-day instead of guessed name)
+    static let buildVersion = "37"
     static let appVersion = "0.1.0"
 
     static func main() async throws {

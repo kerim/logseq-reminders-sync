@@ -509,7 +509,13 @@ struct SyncEngine {
             guard let statusForList = config.status(forListId: snap.listId) else { continue }
 
             logger.log("Adopting new reminder as mirror: \(snap.title.prefix(60))")
-            let target = try await resolvedCaptureTarget()
+            let target: CaptureTarget
+            do {
+                target = try await resolvedCaptureTarget()
+            } catch {
+                logger.log("WARN: skipping adopt for '\(snap.title.prefix(60))': \(error.localizedDescription)")
+                continue
+            }
 
             // Priority: carry from reminder; if none, default to Medium (Option 1).
             let capturedPriority: LogseqPriority?
@@ -582,11 +588,18 @@ struct SyncEngine {
             if captureUUIDForExtId[snap.extId] != nil { continue }  // already anchored
 
             logger.log("Importing note: \(snap.title.prefix(60))")
+            let noteTarget: CaptureTarget
+            do {
+                noteTarget = try await resolvedCaptureTarget()
+            } catch {
+                logger.log("WARN: skipping note import for '\(snap.title.prefix(60))': \(error.localizedDescription)")
+                continue
+            }
             let noteURL = await reminders.readURLAttachment(localId: snap.localId)
             let noteContent = Mapper.linkifyImportedTitle(title: snap.title, url: noteURL)
             let paragraphs = Mapper.splitNoteParagraphs(snap.notes)
             let topUUID = try await logseq.createNote(
-                target: try await resolvedCaptureTarget(),
+                target: noteTarget,
                 title: noteContent,
                 paragraphs: paragraphs,
                 capturedReminderExtId: snap.extId)
