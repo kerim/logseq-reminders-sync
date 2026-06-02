@@ -487,24 +487,25 @@ struct LogseqClient {
         }
 
         switch rows.count {
+        case 0:
+            // No journal for this day — attempt to create one.
+            return try await createJournalIfPossible(for: date, day: day, calendar: cal)
+
         case 1:
             guard let title = rows[0][0] as? String else {
                 throw LogseqError.unexpectedShape("journal-day \(day) row: \(rows[0])")
             }
             return title
 
-        case let n where n > 1:
+        default:
             // Multiple journals for this day — unexpected graph state.
             // Prefer the canonical UUID; never create a third journal.
+            let n = rows.count
             let canonical = canonicalJournalUUID(for: date, calendar: cal)
             let preferred = rows.first(where: { ($0[1] as? String) == canonical }) ?? rows[0]
             let title = (preferred[0] as? String) ?? (rows[0][0] as? String) ?? ""
             logger?.log("WARN: \(n) journals found for \(day) — using '\(title)', not creating")
             return title
-
-        default:
-            // Zero rows — journal is genuinely missing for this date.
-            return try await createJournalIfPossible(for: date, day: day, calendar: cal)
         }
     }
 
@@ -600,12 +601,8 @@ struct LogseqClient {
     }
 
     private func fallbackDateLabel(for date: Date, calendar: Calendar) -> String {
-        let df = DateFormatter()
-        df.locale = Locale(identifier: "en_US_POSIX")
-        df.calendar = calendar
-        df.timeZone = calendar.timeZone
-        df.dateFormat = "MMM d, yyyy"
-        return df.string(from: date)
+        // "MMM d, yyyy" contains no unsupported tokens so renderJournalTitle never returns nil here.
+        return renderJournalTitle(date: date, format: "MMM d, yyyy", calendar: calendar) ?? "(unknown date)"
     }
 
     /// Find existing Inbox block or create it on the journal page. Returns the block UUID.
