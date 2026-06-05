@@ -138,6 +138,51 @@ This does a **full clean**: it empties the managed lists (the five status lists 
 
 ---
 
+## Stopping & uninstalling
+
+### Pause automatic syncing
+
+Each run is a single pass that finishes and exits on its own — there's no daemon to kill. Automatic syncing comes entirely from the background **LaunchAgent** (`com.kerim.logseq-reminders-sync`). To stop it while leaving everything installed:
+
+```fish
+launchctl bootout gui/(id -u)/com.kerim.logseq-reminders-sync
+```
+
+Scheduled syncs halt immediately; your config, lists, and graph markers are untouched, and you can still run a sync by hand. To start it again (the exact inverse):
+
+```fish
+launchctl bootstrap gui/(id -u) ~/Library/LaunchAgents/com.kerim.logseq-reminders-sync.plist
+```
+
+### Uninstall completely
+
+There's no `uninstall` command — removal is just a few deletions. In order:
+
+```fish
+# 1. Stop and remove the background agent
+launchctl bootout gui/(id -u)/com.kerim.logseq-reminders-sync
+rm ~/Library/LaunchAgents/com.kerim.logseq-reminders-sync.plist
+
+# 2. Remove the binary
+rm ~/.local/bin/logseq-reminders-sync
+
+# 3. Remove config, state, and logs
+rm -rf ~/.logseq-reminders-sync
+
+# 4. Optionally delete the cloned source (and its build cache)
+rm -rf /path/to/logseq-reminders-sync
+```
+
+That removes the tool itself. Three things are left behind on purpose, because they're yours, not the tool's:
+
+- **The Reminders lists** (*Logseq Backlog / Todo / Doing / In Review / Canceled* and *Logseq Notes*) and any reminders still in them. Delete them by hand in Reminders.app if you don't want them.
+- **The hidden sync markers in your graph** (`reminder-id` / `captured-reminder-id` properties on tasks). They're harmless and inert once the tool is gone — leave them, or remove the properties in Logseq if you prefer a clean graph.
+- **The Reminders permission grant.** To revoke it: System Settings → Privacy & Security → Reminders, and toggle the tool off.
+
+One more optional item: the one-time **code-signing certificate** (`com.kerim.logseq-reminders-sync`) lives in your **login keychain** (open Keychain Access to find it). Delete it only if you're sure you won't reinstall — a fresh certificate means re-granting Reminders access from scratch.
+
+---
+
 ## Configuration
 
 Config lives at `~/.logseq-reminders-sync/config.json` (created by `setup`). Fields:
@@ -177,12 +222,7 @@ logseq-reminders-sync --backfill-links   # add the Logseq backlink to older mirr
 - **"Could not find the logseq CLI":** install it, put it on your `PATH`, or set `logseqCliPath` in the config to its absolute path.
 - **Background sync isn't running:** check `launchctl list | grep logseq` and the agent logs at `~/.logseq-reminders-sync/log/launchd.err.log`.
 
-The background agent is a LaunchAgent labeled `com.kerim.logseq-reminders-sync` (the identifier is arbitrary but kept stable so the Reminders grant sticks). To remove it:
-
-```fish
-launchctl bootout gui/(id -u)/com.kerim.logseq-reminders-sync
-rm ~/Library/LaunchAgents/com.kerim.logseq-reminders-sync.plist
-```
+The background agent is a LaunchAgent labeled `com.kerim.logseq-reminders-sync` (the identifier is arbitrary but kept stable so the Reminders grant sticks). To pause or remove it, see [Stopping & uninstalling](#stopping--uninstalling).
 
 ---
 
