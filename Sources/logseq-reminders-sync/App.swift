@@ -1,10 +1,11 @@
+import Darwin
 import Foundation
 import SyncCore
 
 @main
 struct App {
-    // BUILD 39 (update notifications: banner when a newer GitHub release exists)
-    static let buildVersion = "39"
+    // BUILD 40 (pause / resume / uninstall commands)
+    static let buildVersion = "40"
     static let appVersion = "0.1.0"
 
     static func main() async throws {
@@ -36,6 +37,22 @@ struct App {
                 await UpdateNotifier.maybeCheck(configDir: configDir,
                                                 localBuildVersion: Self.buildVersion,
                                                 force: true, logger: logger)
+                return
+            }
+
+            if args.contains("pause") || args.contains("--pause") {
+                pause()
+                return
+            }
+
+            if args.contains("resume") || args.contains("--resume") {
+                resumeSync()
+                return
+            }
+
+
+            if args.contains("uninstall") || args.contains("--uninstall") {
+                try await uninstall()
                 return
             }
 
@@ -259,6 +276,154 @@ struct App {
         print("Done. \(written) written, \(alreadyCorrect) already current, \(failed) failed, \(missing) missing.")
     }
 
+    // MARK: - Lifecycle
+
+    /// Durably stop background syncing. Survives logout/reboot (launchctl disable + bootout).
+    static func pause() {
+        guard LaunchdAgent.isInstalled() else {
+            print("No background agent is installed — nothing to pause.")
+            return
+        }
+        _ = LaunchdAgent.disable()
+        LaunchdAgent.bootout()
+        print("Background sync paused (survives reboot).")
+        print("Run 'logseq-reminders-sync resume' to restart it.")
+    }
+
+    /// Re-enable and restart background syncing after a durable pause.
+    static func resumeSync() {
+        guard LaunchdAgent.isInstalled() else {
+            print("No background agent is installed — run 'logseq-reminders-sync setup' first.")
+            return
+        }
+        _ = LaunchdAgent.enable()
+        if LaunchdAgent.bootstrap() {
+            print("Background sync resumed.")
+        } else {
+            print("Agent re-enabled but failed to start. Try:")
+            print("  launchctl bootstrap gui/(id -u) ~/Library/LaunchAgents/com.kerim.logseq-reminders-sync.plist")
+        }
+    }
+
+    /// Fully remove the tool after a typed confirmation.
+    static func uninstall() async throws {
+        print("logseq-reminders-sync uninstall\n")
+        print("This will permanently remove:")
+        print("  • The background sync agent (if installed)")
+        print("  • The six managed Reminders lists and all reminders in them")
+        print("  • The reminder-id / captured-reminder-id markers from your Logseq graph")
+        print("  • All local files under ~/.logseq-reminders-sync/")
+        print("  • The installed binary at ~/.local/bin/logseq-reminders-sync")
+        print("  • The signing certificate from your login keychain\n")
+        print("Type \"uninstall\" to confirm (anything else aborts): ", terminator: "")
+        guard let answer = readLine()?.trimmingCharacters(in: .whitespaces),
+              answer == "uninstall" else {
+            print("Aborted.")
+            return
+        }
+        print()
+
+        // Acquire the lockfile so we can't race a concurrent sync pass.
+        let configDir = Config.configDir
+        try? FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
+        let lock = Lockfile(url: configDir.appendingPathComponent("lock"))
+        try lock.acquire()
+
+        // Step 1: Stop and remove the agent.
+        print("Stopping and removing background agent...")
+        LaunchdAgent.remove()
+        print("  Done.")
+
+        // Load config (best-effort; steps 5a/5b skip gracefully if config is absent).
+        let config = try? Config.load()
+
+        // Step 5a: Delete managed Reminders lists.
+        if let config {
+            print("Deleting managed Reminders lists...")
+            let remindersStore = RemindersStore()
+            do {
+                try await remindersStore.authorize()
+                let (deleted, failed) = try await remindersStore.deleteManagedLists(config: config)
+                print("  Deleted \(deleted) list(s).")
+                if !failed.isEmpty {
+                    print("  WARN: Could not delete: \(failed.joined(separator: ", "))")
+                    print("  Remove them manually in Reminders.app.")
+                }
+            } catch {
+                print("  WARN: \(error.localizedDescription)")
+                print("  Delete the Logseq lists manually in Reminders.app.")
+            }
+        } else {
+            print("No config found — skipping Reminders list deletion.")
+        }
+
+        // Step 5b: Strip sync markers from the Logseq graph.
+        if let config {
+            print("Removing sync markers from graph '\(config.graph)'...")
+            do {
+                let cliPath = try resolveCliPath(config: config)
+                var client = LogseqClient(cliPath: cliPath, graph: config.graph)
+                try await client.bootstrap()
+                let stripped = try await client.clearSyncProperties()
+                print("  Stripped \(stripped) block(s).")
+            } catch {
+                print("  WARN: \(error.localizedDescription)")
+                print("  You can remove reminder-id / captured-reminder-id properties manually in Logseq.")
+            }
+        } else {
+            print("No config found — skipping graph marker removal.")
+        }
+
+        // Step 6: Remove installed binary.
+        let binaryPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".local/bin/logseq-reminders-sync").path
+        print("Removing binary at \(binaryPath)...")
+        do {
+            try FileManager.default.removeItem(atPath: binaryPath)
+            print("  Removed.")
+        } catch {
+            print("  WARN: \(error.localizedDescription)")
+        }
+
+        // Release lock explicitly before removing configDir (step 7).
+        lock.release()
+
+        // Step 7: Remove config dir (config, state, logs, lock).
+        print("Removing local data (~/.logseq-reminders-sync/)...")
+        do {
+            try FileManager.default.removeItem(at: configDir)
+            print("  Removed.")
+        } catch {
+            print("  WARN: \(error.localizedDescription)")
+        }
+
+        // Step 8: Remove the signing certificate from the login keychain.
+        print("Removing signing certificate...")
+        let keychainPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Keychains/login.keychain-db").path
+        let sec = Process()
+        sec.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        sec.arguments = ["delete-identity", "-c", "logseq-reminders-sync", keychainPath]
+        sec.standardOutput = Pipe()
+        sec.standardError = Pipe()
+        if (try? sec.run()) != nil {
+            sec.waitUntilExit()
+            if sec.terminationStatus == 0 {
+                print("  Certificate removed.")
+            } else {
+                print("  Certificate not found or already removed.")
+            }
+        }
+
+        print("""
+
+        Uninstall complete.
+
+        One manual step: revoke Reminders access in
+          System Settings → Privacy & Security → Reminders → toggle off "logseq-reminders-sync"
+        """)
+    }
+
     // MARK: - Diagnostics
 
     static func dumpReminders(config: Config) async throws {
@@ -341,6 +506,10 @@ struct App {
                              optionally install the background sync agent
           switch-graph       Point the tool at a different Logseq graph: empty the 5
                              lists, strip sync markers from the old graph, reset state
+          pause              Durably stop background syncing (survives logout/reboot)
+          resume             Re-enable and restart background syncing after a pause
+          uninstall          Remove agent, lists, graph markers, local files, binary,
+                             and signing certificate (requires typed confirmation)
 
         Options:
           --version, -v      Print version and exit

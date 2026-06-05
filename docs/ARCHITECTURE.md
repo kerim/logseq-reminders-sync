@@ -42,6 +42,14 @@ Read `SyncEngine.run()` top-to-bottom — it's the source of truth. The shape:
 
 5. **Text transformation pipeline** (`Mapper.plainText`): resolve `[[uuid]]` page-refs to titles via Logseq query → strip `[[Page]]` wrappers / `#tags` / `((block-refs))` → run through Foundation's markdown parser to drop `**bold**` / `*italic*` / `` `code` `` / `[label](url)`. Child blocks of the task become reminder notes, one line each. This is in `SyncCore` and is what most tests cover.
 
+## Lifecycle verbs (`App.swift` — `pause` / `resume` / `uninstall`)
+
+Three commands handle the agent and tool lifetime, dispatched in `App.main()` before `Config.load()`:
+
+- **`pause`** — calls `LaunchdAgent.disable()` (persists across reboot via `launchctl disable`) then `bootout()` (stops the running instance). Inverse of `resume`.
+- **`resume`** — calls `LaunchdAgent.enable()` first (clears the durable disable), then `bootstrap()`. Order is critical: `bootstrap` is silently refused on a disabled label. This same `enable`→`bootstrap` order was wired into `LaunchdAgent.reload()` (build 40) for the same reason — `setup`'s re-install path goes through `reload()`.
+- **`uninstall`** — requires the user to type `"uninstall"` verbatim. Acquires the lockfile (creates `Config.configDir` first so `Lockfile.acquire()` has a writable dir). Steps: (1) `LaunchdAgent.remove()` — bootout + disable + delete plist; (5a) `RemindersStore.deleteManagedLists(config:)` — per-calendar `removeCalendar(_:commit:true)`, re-fetching by identifier inside the loop because `store.reset()` on error invalidates prior `EKCalendar` references; (5b) `LogseqClient.clearSyncProperties()` — same pattern as `switch-graph`; (6) delete binary at `~/.local/bin/logseq-reminders-sync`; release lock explicitly before (7) `rm -rf ~/.logseq-reminders-sync/`; (8) `/usr/bin/security delete-identity` for the signing cert. Steps 5a and 5b each have independent `do/catch` so a Reminders failure doesn't prevent the marker strip (and vice versa). One step is printed as a manual action: revoking the Reminders TCC permission (no EventKit API can do this).
+
 ## Onboarding & graph switching (`Setup.swift`)
 
 Both are interactive (stdin via `Prompt`) and mutate live state, so both **acquire the lockfile** and coordinate with the launchd agent. Read `Setup.run()` / `Setup.switchGraph()` before changing either.

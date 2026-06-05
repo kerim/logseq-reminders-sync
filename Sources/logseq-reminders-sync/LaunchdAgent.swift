@@ -55,9 +55,13 @@ enum LaunchdAgent {
         reload()
     }
 
-    /// bootout (ignore "not loaded"), then bootstrap. Falls back to unload/load.
+    /// bootout (ignore "not loaded"), enable (clear any durable disable), then bootstrap.
+    /// Falls back to unload/load. The enable() call ensures that a label durably disabled
+    /// by `pause` is re-activated before bootstrap — launchd silently refuses bootstrap
+    /// on a disabled label.
     static func reload() {
         bootout()
+        _ = enable()
         if !bootstrap() {
             _ = runLaunchctl(["load", "-w", plistURL.path])
         }
@@ -78,6 +82,27 @@ enum LaunchdAgent {
     static func bootstrap() -> Bool {
         if runLaunchctl(["bootstrap", guiDomain, plistURL.path]) { return true }
         return runLaunchctl(["load", "-w", plistURL.path])
+    }
+
+    /// Durably disable the agent label so launchd won't restart it across logout/reboot.
+    /// Not @discardableResult — callers that intentionally discard must write `_ = disable()`.
+    static func disable() -> Bool {
+        runLaunchctl(["disable", "\(guiDomain)/\(label)"])
+    }
+
+    /// Clear a prior durable disable. Must be called before `bootstrap()` when the label
+    /// was durably disabled — launchd silently refuses bootstrap on a disabled label.
+    /// Not @discardableResult — callers that intentionally discard must write `_ = enable()`.
+    static func enable() -> Bool {
+        runLaunchctl(["enable", "\(guiDomain)/\(label)"])
+    }
+
+    /// Stop the running instance, durably disable the label, and delete the plist.
+    /// Safe to call when the agent is not running or the plist is already absent.
+    static func remove() {
+        bootout()
+        _ = disable()
+        try? FileManager.default.removeItem(at: plistURL)
     }
 
     @discardableResult

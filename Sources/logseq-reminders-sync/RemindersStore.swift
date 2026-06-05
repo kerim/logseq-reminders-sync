@@ -326,6 +326,33 @@ actor RemindersStore {
         }
     }
 
+    /// Delete every managed list (five status lists + the optional notes list) from the
+    /// Reminders store. Commits per calendar so a single failure doesn't block the rest.
+    /// Re-fetches each calendar by identifier inside the loop — `store.reset()` (called on
+    /// catch) invalidates any EKCalendar fetched before the loop started.
+    /// Returns the count of lists deleted and titles of any that could not be removed.
+    func deleteManagedLists(config: Config) async throws -> (deleted: Int, failed: [String]) {
+        let pairs: [(id: String, title: String)] = managedCalendars(config: config)
+            .map { ($0.calendarIdentifier, $0.title) }
+        var deleted = 0
+        var failed: [String] = []
+        for (id, title) in pairs {
+            guard let cal = store.calendars(for: .reminder)
+                .first(where: { $0.calendarIdentifier == id }) else {
+                deleted += 1   // already gone — count as success
+                continue
+            }
+            do {
+                try store.removeCalendar(cal, commit: true)
+                deleted += 1
+            } catch {
+                store.reset()
+                failed.append(title)
+            }
+        }
+        return (deleted, failed)
+    }
+
     /// Count reminders (incomplete + completed, unbounded) still in the managed lists —
     /// `switch-graph`'s post-empty verification read.
     func countRemaining(inManagedLists config: Config) async throws -> Int {

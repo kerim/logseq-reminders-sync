@@ -1,5 +1,16 @@
 # Changelog
 
+## Build 40 — 2026-06-06
+
+### Added
+- **`pause` and `resume` commands.** `pause` durably disables the background agent so it stays off across logout and reboot (`launchctl disable` + `bootout`); `resume` re-enables and restarts it. Replaces the manual `launchctl` steps for everyday pause/resume.
+- **`uninstall` command.** Removes the tool in one step after a typed confirmation: stops and removes the background agent, deletes the six managed Reminders lists and all reminders in them, strips `reminder-id` / `captured-reminder-id` markers from the Logseq graph, removes the binary, clears the local data directory (`~/.logseq-reminders-sync/`), and removes the signing certificate from the login keychain.
+
+### Changed
+- `LaunchdAgent.reload()` now calls `enable()` before `bootstrap()`, so re-installing the agent after a durable `pause` correctly re-enables the label. Previously, `bootstrap` was silently refused while the label was disabled.
+
+---
+
 ## Build 39 — 2026-06-02
 
 ### Added
