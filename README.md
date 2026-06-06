@@ -130,8 +130,8 @@ The notification is shown via `osascript`, so macOS attributes the banner to "Sc
 
 Updating is the same as installing: you grab a fresh copy of the code and run the installer again. You **don't** need to find the folder you originally downloaded — the steps below download a clean copy, so they work even if you've forgotten where it went or never used the command line before.
 
-1. Open the **Terminal** app. (Press `⌘ + Space`, type `Terminal`, press Return.)
-2. Copy the block below, paste it into the Terminal window, and press Return. It runs as four steps; let it finish — it may ask for your Mac login password partway through, which is normal.
+1. Open the **Terminal** app.
+2. Copy the block below, paste it into the Terminal window, and press Return. It runs as several steps; let it finish — it may ask for your Mac login password partway through, which is normal.
 
 ```fish
 cd ~
