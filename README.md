@@ -128,23 +128,30 @@ The notification is shown via `osascript`, so macOS attributes the banner to "Sc
 
 ### Updating to the latest version
 
-When a newer build is available, pull the latest code and re-run the installer from your clone of the repository:
+Updating is the same as installing: you grab a fresh copy of the code and run the installer again. You **don't** need to find the folder you originally downloaded — the steps below download a clean copy, so they work even if you've forgotten where it went or never used the command line before.
+
+1. Open the **Terminal** app. (Press `⌘ + Space`, type `Terminal`, press Return.)
+2. Copy the block below, paste it into the Terminal window, and press Return. It runs as four steps; let it finish — it may ask for your Mac login password partway through, which is normal.
 
 ```fish
-cd /path/to/logseq-reminders-sync   # wherever you cloned it
-git pull
+cd ~
+rm -rf logseq-reminders-sync-update
+git clone https://github.com/kerim/logseq-reminders-sync logseq-reminders-sync-update
+cd logseq-reminders-sync-update
 bash scripts/install.sh
 ```
 
-`install.sh` doubles as the updater: it reuses your existing signing certificate, rebuilds the release binary, re-signs it, and reinstalls to `~/.local/bin/`. Your config, the background agent, the managed Reminders lists, and the sync markers in your graph are all left untouched — only the binary is replaced.
+What each line does, in plain terms: go to your home folder → throw away any leftover download from a previous update → download the newest code into a folder named `logseq-reminders-sync-update` → step into that folder → run the installer.
 
-Confirm the update landed:
+`install.sh` doubles as the updater: it reuses your existing signing certificate, rebuilds the app, and replaces the installed copy at `~/.local/bin/`. **Nothing you care about is touched** — your settings, the background sync schedule, the Reminders lists, and the markers in your Logseq graph all stay exactly as they were. Only the program itself is swapped for the new version.
+
+When it's done, check that the new version is in place:
 
 ```fish
 logseq-reminders-sync --version
 ```
 
-Because the new binary is signed with the same certificate, macOS keeps your existing Reminders access grant — you won't be re-prompted. (If you ever lose or recreate the certificate, you will be; see [Install](#install).)
+The build number it prints should match the latest one announced in the update banner. Because the new copy is signed with the same certificate as before, macOS keeps your existing Reminders permission — you won't be asked to grant access again. (The one exception is if you've lost or recreated that certificate; see [Install](#install).)
 
 ## Switching graphs
 
