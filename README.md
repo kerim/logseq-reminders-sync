@@ -126,6 +126,26 @@ logseq-reminders-sync --check-update
 
 The notification is shown via `osascript`, so macOS attributes the banner to "Script Editor" rather than to the tool — that's expected. If Do Not Disturb or Focus is active, the banner may be suppressed; the log entry in `~/.logseq-reminders-sync/log/` still records that a newer build was found.
 
+### Updating to the latest version
+
+When a newer build is available, pull the latest code and re-run the installer from your clone of the repository:
+
+```fish
+cd /path/to/logseq-reminders-sync   # wherever you cloned it
+git pull
+bash scripts/install.sh
+```
+
+`install.sh` doubles as the updater: it reuses your existing signing certificate, rebuilds the release binary, re-signs it, and reinstalls to `~/.local/bin/`. Your config, the background agent, the managed Reminders lists, and the sync markers in your graph are all left untouched — only the binary is replaced.
+
+Confirm the update landed:
+
+```fish
+logseq-reminders-sync --version
+```
+
+Because the new binary is signed with the same certificate, macOS keeps your existing Reminders access grant — you won't be re-prompted. (If you ever lose or recreate the certificate, you will be; see [Install](#install).)
+
 ## Switching graphs
 
 To point the tool at a different Logseq graph:
