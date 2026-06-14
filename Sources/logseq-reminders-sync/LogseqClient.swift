@@ -360,7 +360,7 @@ struct LogseqClient {
         guard let idents = propertyIdents else { throw LogseqError.notBootstrapped }
         _ = try await run([
             "upsert", "block", "-g", graph, "--uuid", blockUUID,
-            "--update-properties", "{:\(idents.reminderId) \"\(extId)\"}",
+            "--update-properties=" + "{:\(idents.reminderId) \"\(Mapper.ednString(extId))\"}",
             "--output", "json"
         ])
     }
@@ -370,7 +370,7 @@ struct LogseqClient {
         let ident = field == .deadline ? idents.deadline : idents.scheduled
         _ = try await run([
             "upsert", "block", "-g", graph, "--uuid", blockUUID,
-            "--update-properties", "{:\(ident) \(epochMs)}",
+            "--update-properties=" + "{:\(ident) \(epochMs)}",
             "--output", "json"
         ])
     }
@@ -607,10 +607,7 @@ struct LogseqClient {
 
     /// Find existing Inbox block or create it on the journal page. Returns the block UUID.
     func findOrCreateInboxBlock(journalPage: String, inboxTitle: String) async throws -> String {
-        // Escape for Datascript EDN string literal (backslash first, then quote).
-        let safeTitle = inboxTitle
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
+        let safeTitle = Mapper.ednString(inboxTitle)
         let existResult = try await query("""
             [:find ?uuid
              :where [?p :block/title "\(journalPage)"] [?p :block/journal-day _]
@@ -624,7 +621,7 @@ struct LogseqClient {
         let createResult = try await run([
             "upsert", "block", "-g", graph,
             "--target-page", journalPage,
-            "--content", inboxTitle,
+            "--content=" + inboxTitle,
             "--output", "json"
         ])
         return try await extractCreatedUUID(from: createResult, context: "inbox block")
@@ -654,8 +651,8 @@ struct LogseqClient {
         // Atomic: block content + reminder-id in one upsert.
         let createResult = try await run(
             ["upsert", "block", "-g", graph] + targetArgs + [
-            "--content", title,
-            "--update-properties", "{:\(idents.reminderId) \"\(reminderExtId)\"}",
+            "--content=" + title,
+            "--update-properties=" + "{:\(idents.reminderId) \"\(Mapper.ednString(reminderExtId))\"}",
             "--output", "json"
         ])
         let blockUUID = try await extractCreatedUUID(from: createResult, context: "capture task")
@@ -693,20 +690,29 @@ struct LogseqClient {
         // Atomic: title block content + captured-reminder-id anchor in one upsert.
         let createResult = try await run(
             ["upsert", "block", "-g", graph] + targetArgs + [
-            "--content", title,
-            "--update-properties", "{:\(idents.capturedReminderId) \"\(capturedReminderExtId)\"}",
+            "--content=" + title,
+            "--update-properties=" + "{:\(idents.capturedReminderId) \"\(Mapper.ednString(capturedReminderExtId))\"}",
             "--output", "json"
         ])
         let topUUID = try await extractCreatedUUID(from: createResult, context: "note title")
-        // Append each paragraph as a nested child block, in order. NOT try? — a failed
-        // child should surface; the anchored title block prevents a duplicate re-import.
-        for paragraph in paragraphs {
-            _ = try await run([
-                "upsert", "block", "-g", graph,
-                "--target-uuid", topUUID,
-                "--content", paragraph,
+        // Append each paragraph as a nested child block, in order. On any failure, roll
+        // back the anchored title block so the next pass gets a clean retry (freshNote).
+        do {
+            for paragraph in paragraphs {
+                _ = try await run([
+                    "upsert", "block", "-g", graph,
+                    "--target-uuid", topUUID,
+                    "--content=" + paragraph,
+                    "--output", "json"
+                ])
+            }
+        } catch {
+            _ = try? await run([
+                "remove", "block", "-g", graph,
+                "--uuid", topUUID,
                 "--output", "json"
             ])
+            throw error
         }
         return topUUID
     }

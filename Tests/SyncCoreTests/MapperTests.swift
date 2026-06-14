@@ -361,6 +361,76 @@ struct MapperTests {
         #expect(Mapper.splitNoteParagraphs("dup\ndup\nlast") == ["dup", "dup", "last"])
     }
 
+    @Test func splitNoteParagraphsStripsLeadingDash() {
+        // "- " prefix is a Markdown bullet marker; Logseq blocks are already bullets.
+        #expect(Mapper.splitNoteParagraphs("- first\n- second") == ["first", "second"])
+    }
+
+    @Test func splitNoteParagraphsStripsLeadingDashFromNumberedItems() {
+        // Apple Reminders formats numbered-list body items as "- 1. text".
+        let body = "- 1. Course runs 17 weeks. No \"17+1\".\n- 2. Check syllabus.\n- 3. Diverse assessments."
+        #expect(Mapper.splitNoteParagraphs(body) == [
+            "1. Course runs 17 weeks. No \"17+1\".",
+            "2. Check syllabus.",
+            "3. Diverse assessments."
+        ])
+    }
+
+    @Test func splitNoteParagraphsLeavesNonDashPrefixAlone() {
+        // A paragraph not starting with "- " is passed through as-is.
+        #expect(Mapper.splitNoteParagraphs("1. item\nPlain line") == ["1. item", "Plain line"])
+    }
+
+    @Test func splitNoteParagraphsLeavesBareDashAlone() {
+        // A lone "-" (no trailing space) is not a list marker — kept intact.
+        #expect(Mapper.splitNoteParagraphs("-") == ["-"])
+    }
+
+    // MARK: - ednString (EDN double-quoted-string escaping)
+
+    @Test func ednStringPlainPassthrough() {
+        #expect(Mapper.ednString("plain text") == "plain text")
+    }
+
+    @Test func ednStringEscapesQuote() {
+        #expect(Mapper.ednString("say \"hi\"") == "say \\\"hi\\\"")
+    }
+
+    @Test func ednStringEscapesBackslash() {
+        #expect(Mapper.ednString("C:\\path") == "C:\\\\path")
+    }
+
+    @Test func ednStringBackslashThenQuoteOrdering() {
+        // Input `\"` must become `\\\"` (backslash escaped first, then quote).
+        // Wrong ordering would double-escape the added backslash.
+        #expect(Mapper.ednString("\\\"") == "\\\\\\\"")
+    }
+
+    @Test func ednStringApostrophePassthrough() {
+        #expect(Mapper.ednString("it's fine") == "it's fine")
+    }
+
+    @Test func ednStringParenPassthrough() {
+        #expect(Mapper.ednString("total (12/3)") == "total (12/3)")
+    }
+
+    @Test func ednStringSlashPassthrough() {
+        #expect(Mapper.ednString("teachers/administrators") == "teachers/administrators")
+    }
+
+    @Test func ednStringNewlinePassthrough() {
+        // Newlines pass through unescaped — note bodies are newline-free per splitNoteParagraphs.
+        #expect(Mapper.ednString("a\nb") == "a\nb")
+    }
+
+    @Test func ednStringReproInput() {
+        // Representative input matching the failing reminder: numbered list, quoted number,
+        // apostrophe, parentheses, and slash — all of which appear in the real lost body.
+        let input = "1. Bring \"17+1\" teachers/administrators (per building)"
+        let expected = "1. Bring \\\"17+1\\\" teachers/administrators (per building)"
+        #expect(Mapper.ednString(input) == expected)
+    }
+
     // MARK: - linkifyImportedTitle (forward-output tests)
 
     @Test func linkifyNilUrlReturnsTitle() {

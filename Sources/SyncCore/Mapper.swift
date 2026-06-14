@@ -200,6 +200,18 @@ public enum Mapper {
             .split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
+            .map { $0.hasPrefix("- ") ? String($0.dropFirst(2)) : $0 }
+    }
+
+    // MARK: - EDN escaping
+
+    /// Escape a Swift string for use inside an EDN/Datascript double-quoted string literal.
+    /// Escapes `\` then `"` only — other bytes (including newlines) pass through unescaped.
+    /// Note bodies are newline-free per `splitNoteParagraphs`; titles are single-line.
+    public static func ednString(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
     }
 
     // MARK: - Logseq deep link

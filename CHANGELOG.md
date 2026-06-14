@@ -1,5 +1,18 @@
 # Changelog
 
+## Build 45 — 2026-06-14
+
+### Fixed
+- **Reminder text with quotation marks or backslashes no longer gets silently lost on import.** A note or task whose text contained a `"` (e.g. `Bring "17+1" teachers`) would have its write to Logseq truncated at the quote, dropping the rest. All user text written into Logseq properties is now escaped correctly first.
+- **List items in a shared note no longer show a doubled bullet.** Apple Reminders writes list lines as `- text` (or `- 1. text` for numbered lists); since every Logseq block is already a bullet, the leading `- ` is now stripped on import so items don't appear as `- - text`.
+- **A note line that starts with a dash is no longer mistaken for a command option.** Note body lines beginning with `-` were being misread as flags by the Logseq command-line tool; arguments are now passed in a form that can't be confused with options.
+- **Deleting an imported note in Logseq now lets it re-import.** Previously, once a note was imported the tool remembered it forever and would never bring it back even if you deleted it. The tool now notices when an imported note's anchor is gone from the graph and re-imports the note on the next pass — useful for forcing a clean re-import.
+
+### Changed
+- **A note import that fails partway through now rolls back cleanly.** If the title block is created but a body paragraph fails to write, the half-imported note is removed so the next sync pass retries from scratch instead of leaving a stub that could never complete.
+
+---
+
 ## Build 40 — 2026-06-06
 
 ### Added

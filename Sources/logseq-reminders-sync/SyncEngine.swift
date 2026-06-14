@@ -45,6 +45,24 @@ struct SyncEngine {
         var captureUUIDForExtId: [String: String] = [:]
         for (uuid, extId) in allWithCapIds { captureUUIDForExtId[extId] = uuid }
 
+        // ── Step 3(a.1): Prune stale capture records ──────────────────────────
+        // state.captures is a rebuildable cache of one-way note imports, not a
+        // permanent ledger. A record whose captured-reminder-id anchor is no longer
+        // in the graph means its imported note block was deleted (e.g. the user
+        // removed it to force a re-import). Drop such records so the note re-classifies
+        // .freshNote and re-imports, instead of being skipped forever by the
+        // knownCapExtIds guard in Step 7.5 (:648). Safe because createNote writes the
+        // anchor atomically with the title block — every record had a live anchor at
+        // creation, so present-day absence means deletion, not a half-write. Uses the
+        // same fetchAllBlocksWithCapturedIds index that already drives .alreadyIngested
+        // classification, so it adds no new reliability dependency.
+        let liveCapExtIds = Set(captureUUIDForExtId.keys)
+        let staleExtIds = Set(state.captures.map(\.reminderExtId)).subtracting(liveCapExtIds)
+        for extId in staleExtIds {
+            logger.log("Pruning stale capture (note block deleted): \(extId.prefix(8))…")
+        }
+        state.captures.removeAll { staleExtIds.contains($0.reminderExtId) }
+
         // ── Step 3(b): Fetch out-of-filter linked blocks ──────────────────────
         // Gate uses prioritizedByUUID (was doingByUUID) so blocks that moved off
         // priority are correctly identified as out-of-filter.
