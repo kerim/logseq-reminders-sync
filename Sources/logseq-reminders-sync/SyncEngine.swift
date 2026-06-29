@@ -607,7 +607,9 @@ struct SyncEngine {
             // Read the reminder's URL field before writeBacklink overwrites it.
             let capturedURL = await reminders.readURLAttachment(localId: snap.localId)
             let content = Mapper.linkifyImportedTitle(title: snap.title, url: capturedURL)
+            let paragraphs = Mapper.splitNoteParagraphs(snap.notes)
 
+            do {
             // Write reminder-id ATOMICALLY in the block creation upsert (not a separate call).
             // Status matches the list the reminder was created in.
             let taskUUID = try await logseq.createCaptureTask(
@@ -615,7 +617,8 @@ struct SyncEngine {
                 title: content,
                 reminderExtId: snap.extId,
                 status: statusForList,
-                priority: capturedPriority)
+                priority: capturedPriority,
+                paragraphs: paragraphs)
 
             // If reminder had no priority, also write Medium back to the reminder so
             // both sides agree at pair seeding — preventing the next priority-merge
@@ -638,7 +641,12 @@ struct SyncEngine {
             // Do NOT complete the source reminder — it stays as a live mirror.
             await writeBacklink(localId: snap.localId, blockUUID: taskUUID)
 
-            // Seed full baseline so the next reconcile lands on .converged.
+            // Seed baseline from the real created block so the next Logseq→Reminders
+            // reconcile computes the identical hash and lands on no-op (not a re-push).
+            let seededChildren = try await logseq.fetchChildTitles(blockUUID: taskUUID)
+            let (seedTitle, seedNotes) = try await buildTitleAndNotes(
+                blockTitle: content, childTitles: seededChildren)
+
             let dueDateMs = snap.dueComponents.flatMap { Mapper.dueComponentsToEpochMs($0) }
             let seededPriority: LogseqPriority? = config.syncPriority ? capturedPriority : nil
             let pair = SyncPair(
@@ -650,12 +658,16 @@ struct SyncEngine {
                 lastCompleted: false,
                 lastLogseqUpdated: 0,  // fresh block; will update on next pass
                 lastReminderMod: freshSnap.lastModified.map { ms($0) },
-                lastTitle: Mapper.plainText(content, pageTitles: [:]),
-                lastNotesHash: Mapper.hashNotes(""),
+                lastTitle: seedTitle,
+                lastNotesHash: Mapper.hashNotes(seedNotes),
                 lastDueDateMs: config.syncDates ? dueDateMs : nil,
                 lastDueSource: config.syncDates ? .scheduled : nil,
                 lastPriority: config.syncPriority ? seededPriority?.forSync : nil)
             state.pairs.append(pair)
+            } catch {
+                logger.log("WARN: adopt failed for '\(snap.title.prefix(60))': \(error.localizedDescription)")
+                continue
+            }
         }
 
         // ── Step 7.5: Import "Logseq Notes" reminders one-way ─────────────────

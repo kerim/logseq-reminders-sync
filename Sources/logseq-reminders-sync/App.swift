@@ -4,8 +4,8 @@ import SyncCore
 
 @main
 struct App {
-    // BUILD 45 (feat: prune stale capture records whose note block was deleted — self-healing re-import)
-    static let buildVersion = "45"
+    // BUILD 46 (feat: import reminder notes body on adopt)
+    static let buildVersion = "46"
     static let appVersion = "0.1.0"
 
     static func main() async throws {

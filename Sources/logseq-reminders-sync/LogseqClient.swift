@@ -644,7 +644,8 @@ struct LogseqClient {
         title: String,
         reminderExtId: String,
         status: String,
-        priority: LogseqPriority? = nil
+        priority: LogseqPriority? = nil,
+        paragraphs: [String] = []
     ) async throws -> String {
         guard let idents = propertyIdents else { throw LogseqError.notBootstrapped }
         let targetArgs = target.cliArgs
@@ -667,6 +668,28 @@ struct LogseqClient {
         }
         promoteArgs.append(contentsOf: ["--output", "json"])
         _ = try await run(promoteArgs)
+        // Append body paragraphs as nested children, in order. Paragraphs appended after
+        // promote so a child is never accidentally promoted. On any failure roll the whole
+        // block back so the next pass re-adopts cleanly (mirrors createNote).
+        if !paragraphs.isEmpty {
+            do {
+                for paragraph in paragraphs {
+                    _ = try await run([
+                        "upsert", "block", "-g", graph,
+                        "--target-uuid", blockUUID,
+                        "--content=" + paragraph,
+                        "--output", "json"
+                    ])
+                }
+            } catch {
+                _ = try? await run([
+                    "remove", "block", "-g", graph,
+                    "--uuid", blockUUID,
+                    "--output", "json"
+                ])
+                throw error
+            }
+        }
         return blockUUID
     }
 

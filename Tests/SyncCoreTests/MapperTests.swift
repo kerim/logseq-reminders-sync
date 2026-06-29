@@ -473,6 +473,17 @@ struct MapperTests {
         #expect(Mapper.linkifyImportedTitle(title: "foo\\bar", url: "https://example.com") == "[foo\\\\bar](https://example.com)")
     }
 
+    // MARK: - Adopt seed invariant (documentary)
+
+    // Documents the assumption that the seed computation does not mutate a plain-text
+    // body paragraph. `Mapper.plainText` is a no-op on text that carries no Logseq
+    // markup — so the seed hash computed via buildTitleAndNotes equals what the next
+    // Step 5 pass computes over the same stored children.
+    @Test func plainTextIsNoOpOnPlainParagraph() {
+        let paragraph = "Go to CTBC Bank Wanhua Branch on a weekday morning at 9am"
+        #expect(Mapper.plainText(paragraph, pageTitles: [:]) == paragraph)
+    }
+
     // MARK: - linkifyImportedTitle (round-trip tests)
     // Invariant: Mapper.plainText(Mapper.linkifyImportedTitle(title, url), pageTitles: [:]) == title
 

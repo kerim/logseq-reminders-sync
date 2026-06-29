@@ -1,5 +1,12 @@
 # Changelog
 
+## Build 46 — 2026-06-30
+
+### Fixed
+- **A reminder's notes body is now imported when the reminder is adopted into Logseq.** When you create a reminder directly in one of the five managed lists (Todo, Doing, etc.), it is turned into a Logseq task. Previously the task appeared with just the title — the body text was silently dropped. It now arrives as indented child blocks under the task, one per paragraph. Subsequent syncs leave the body untouched and do not push anything back to Reminders.
+
+---
+
 ## Build 45 — 2026-06-14
 
 ### Fixed
