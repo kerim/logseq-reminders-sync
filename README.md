@@ -28,14 +28,14 @@ There are five **status** lists, one for each Logseq status — plus a sixth **L
 | Todo | **Logseq Todo** | 
 | Doing | **Logseq Doing** | 
 | In Review | **Logseq In Review** | 
-| Canceled | **Logseq Canceled** (Only for canceling previously synced tasks.) | 
+| Canceled | **Logseq Canceled** (drop-off only: moving a reminder here cancels the task, then the reminder is removed) | 
 | Done | (Handled by Reminders completion status) | 
 
 A task's status *is* the list it lives in, so **moving a reminder to a different list changes the task's status in Logseq** — drag a reminder from *Logseq Todo* to *Logseq Doing* and the task becomes Doing. The reverse holds too: change the status in Logseq and the reminder moves to the matching list.
 
 There's no list for **Done**. Completing a reminder (checking it off) marks the task Done in Logseq; un-checking it restores whatever open status it had before.
 
-**Canceled** only exists to cancel tasks that were already synced. Existing cancelled tasks from logseq are ignored on sync. You can cancel a task by moving it to the **Canceled** list. 
+**Canceled** only exists to cancel tasks that were already synced. Tasks that were already canceled in Logseq before being synced are never added to Reminders. You can cancel a task by moving it to the **Canceled** list: on the next sync the task becomes Canceled in Logseq and the reminder is removed, so canceled items never linger in your smart lists. Canceling a task in Logseq removes its reminder the same way. To bring one back, change its status in Logseq to an open status and it is mirrored again.
 
 ### Due dates (Scheduled / Deadline)
 

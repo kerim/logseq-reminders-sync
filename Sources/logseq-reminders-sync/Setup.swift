@@ -25,7 +25,7 @@ enum Setup {
         //    then bootout any existing agent so it can't fire mid-setup.
         try FileManager.default.createDirectory(at: Config.configDir, withIntermediateDirectories: true)
         let lock = Lockfile(url: Config.configDir.appendingPathComponent("lock"))
-        try lock.acquire()
+        try lock.acquire(onWait: { pid in print("Waiting for the sync already running (PID \(pid)) to finish...") })
         defer { lock.release() }
 
         // Bootout any existing agent so it can't fire mid-setup. Restore it on every exit
@@ -151,7 +151,7 @@ enum Setup {
         // 1. Lock FIRST (fail fast if a run holds it), then bootout the agent.
         try FileManager.default.createDirectory(at: Config.configDir, withIntermediateDirectories: true)
         let lock = Lockfile(url: Config.configDir.appendingPathComponent("lock"))
-        try lock.acquire()
+        try lock.acquire(onWait: { pid in print("Waiting for the sync already running (PID \(pid)) to finish...") })
         defer { lock.release() }
 
         let hadAgent = LaunchdAgent.isInstalled()

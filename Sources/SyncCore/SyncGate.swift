@@ -35,6 +35,8 @@ public enum SyncGate {
     /// Decide whether to run a full sync.
     ///
     /// - `cached == nil` (no usable cache) → `.run`.
+    /// - `cachedBuild != currentBuild` (a new binary was installed) → `.run`, so
+    ///   changed sync behavior applies immediately instead of after `forceAfter`.
     /// - `lastRun == nil`, or more than `forceAfter` has elapsed → `.run` (periodic
     ///   safety-net / backstop for the bounded under-trigger windows).
     /// - signals differ from the cache → `.run`.
@@ -44,9 +46,12 @@ public enum SyncGate {
         current: ChangeSignals,
         lastRun: Date?,
         now: Date,
-        forceAfter: TimeInterval
+        forceAfter: TimeInterval,
+        cachedBuild: String? = nil,
+        currentBuild: String? = nil
     ) -> GateDecision {
         guard let cached else { return .run }
+        if cachedBuild != currentBuild { return .run }
         guard let lastRun else { return .run }
         if now.timeIntervalSince(lastRun) > forceAfter { return .run }
         return current == cached ? .skip : .run

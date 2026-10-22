@@ -107,6 +107,14 @@ struct MapperTests {
         #expect(Mapper.logseqStatusIsCompleted("Cancelled") == false)
     }
 
+    @Test func onlyCanceledRemovesReminder() {
+        #expect(Mapper.statusRemovesReminder("Canceled") == true)
+        #expect(Mapper.statusRemovesReminder("Cancelled") == true)
+        for status in ["Doing", "Todo", "Backlog", "In Review", "Done"] {
+            #expect(Mapper.statusRemovesReminder(status) == false, "Expected \(status) to keep its reminder")
+        }
+    }
+
     @Test func openStatusesNotCompleted() {
         for status in ["Doing", "Todo", "Backlog", "In Review", "Canceled", "Cancelled"] {
             #expect(Mapper.logseqStatusIsCompleted(status) == false, "Expected \(status) to be open")

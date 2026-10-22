@@ -5,7 +5,7 @@ import SyncCore
 @main
 struct App {
     // BUILD 46 (feat: import reminder notes body on adopt)
-    static let buildVersion = "46"
+    static let buildVersion = "49"
     static let appVersion = "0.1.0"
 
     static func main() async throws {
@@ -146,7 +146,9 @@ struct App {
         // Acquire lockfile
         let lockURL = configDir.appendingPathComponent("lock")
         let lock = Lockfile(url: lockURL)
-        try lock.acquire()
+        try lock.acquire(onWait: { pid in
+            logger.log("Waiting for the sync already running (PID \(pid)) to finish...")
+        })
         defer { lock.release() }
 
         // Set up stores
@@ -184,7 +186,9 @@ struct App {
                     current: current,
                     lastRun: state.lastRunDate,
                     now: Date(),
-                    forceAfter: TimeInterval(config.gateForceFullRunMinutes * 60)
+                    forceAfter: TimeInterval(config.gateForceFullRunMinutes * 60),
+                    cachedBuild: state.signalsBuild,
+                    currentBuild: buildVersion
                 )
                 if decision == .skip {
                     logger.log(
@@ -222,6 +226,7 @@ struct App {
             fresh.logseqMaxTx = tx
             fresh.remindersListCounts = sig.listCounts
             fresh.remindersMaxModifiedMs = sig.maxModifiedMs
+            fresh.signalsBuild = buildVersion
             stateStore.save(fresh)
         } catch {
             logger.log(
@@ -244,7 +249,7 @@ struct App {
         // Acquire the lockfile so this can't race a concurrent sync's EventKit writes.
         let lockURL = configDir.appendingPathComponent("lock")
         let lock = Lockfile(url: lockURL)
-        try lock.acquire()
+        try lock.acquire(onWait: { pid in print("Waiting for the sync already running (PID \(pid)) to finish...") })
         defer { lock.release() }
 
         let remindersStore = RemindersStore()
@@ -327,7 +332,7 @@ struct App {
         let configDir = Config.configDir
         try? FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
         let lock = Lockfile(url: configDir.appendingPathComponent("lock"))
-        try lock.acquire()
+        try lock.acquire(onWait: { pid in print("Waiting for the sync already running (PID \(pid)) to finish...") })
 
         // Step 1: Stop and remove the agent.
         print("Stopping and removing background agent...")

@@ -160,6 +160,9 @@ public struct SyncState: Codable, Sendable {
     /// Max `lastModifiedDate` (epoch ms) across incomplete + recently-completed
     /// reminders at the end of the last run.
     public var remindersMaxModifiedMs: Int64?
+    /// Build number of the binary that captured the signals. A different installed
+    /// build forces a full run, so new sync behavior applies on its first pass.
+    public var signalsBuild: String?
 
     /// Assembled gate signals, or nil when the cache is incomplete (any field nil).
     /// nil drives `SyncGate.decision` to `.run`, preserving the over-trigger rule.
@@ -178,11 +181,12 @@ public struct SyncState: Codable, Sendable {
         self.logseqMaxTx = nil
         self.remindersListCounts = nil
         self.remindersMaxModifiedMs = nil
+        self.signalsBuild = nil
     }
 
     private enum CodingKeys: String, CodingKey {
         case pairs, captures, lastRunDate, archivedExtIds
-        case logseqMaxTx, remindersListCounts, remindersMaxModifiedMs
+        case logseqMaxTx, remindersListCounts, remindersMaxModifiedMs, signalsBuild
     }
 
     public init(from decoder: Decoder) throws {
@@ -194,6 +198,7 @@ public struct SyncState: Codable, Sendable {
         logseqMaxTx            = try c.decodeIfPresent(Int64.self,         forKey: .logseqMaxTx)
         remindersListCounts    = try c.decodeIfPresent([String: Int].self, forKey: .remindersListCounts)
         remindersMaxModifiedMs = try c.decodeIfPresent(Int64.self,         forKey: .remindersMaxModifiedMs)
+        signalsBuild           = try c.decodeIfPresent(String.self,        forKey: .signalsBuild)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -205,5 +210,6 @@ public struct SyncState: Codable, Sendable {
         try c.encodeIfPresent(logseqMaxTx,            forKey: .logseqMaxTx)
         try c.encodeIfPresent(remindersListCounts,    forKey: .remindersListCounts)
         try c.encodeIfPresent(remindersMaxModifiedMs, forKey: .remindersMaxModifiedMs)
+        try c.encodeIfPresent(signalsBuild,           forKey: .signalsBuild)
     }
 }

@@ -31,6 +31,18 @@ struct SyncGateTests {
         #expect(d == .run)
     }
 
+    @Test("A different installed build forces a run")
+    func newBuildRuns() {
+        let d = SyncGate.decision(cached: baseline, current: baseline,
+                                  lastRun: recentRun, now: now, forceAfter: forceAfter,
+                                  cachedBuild: "46", currentBuild: "47")
+        #expect(d == .run)
+        let same = SyncGate.decision(cached: baseline, current: baseline,
+                                     lastRun: recentRun, now: now, forceAfter: forceAfter,
+                                     cachedBuild: "47", currentBuild: "47")
+        #expect(same == .skip)
+    }
+
     @Test("Identical signals within the force window skip")
     func identicalSkips() {
         let d = SyncGate.decision(cached: baseline, current: baseline,

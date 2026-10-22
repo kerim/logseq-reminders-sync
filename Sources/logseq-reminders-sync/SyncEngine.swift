@@ -177,6 +177,13 @@ struct SyncEngine {
                 continue
             }
 
+            // A canceled task has no reminder — delete instead of rebuilding the pair.
+            if Mapper.statusRemovesReminder(blockStatus) {
+                logger.log("Rebuild target \(blockUUID.prefix(8))… is \(blockStatus) → deleting reminder")
+                try await reminders.deleteReminder(localId: snap.localId)
+                continue
+            }
+
             logger.log("Rebuilding pair: \(blockUUID.prefix(8))… ↔ reminder \(snap.localId.prefix(8))…")
             let logseqDone = Mapper.logseqStatusIsCompleted(blockStatus)
             let childTitles = try await logseq.fetchChildTitles(blockUUID: blockUUID)
@@ -308,6 +315,13 @@ struct SyncEngine {
                 do {
                     _ = try await reminders.uncompleteReminder(localId: pair.reminderLocalId)
                     try await logseq.updateTaskStatus(blockUUID: uuid, status: "Done")
+                } catch let error as LogseqError where error.isTimeout {
+                    // The Done write may have landed before Logseq hung. Re-completing
+                    // would then advance the task twice next pass, so leave the reminder
+                    // unchecked: if Logseq advanced, next pass rolls it forward normally;
+                    // if not, the user sees it unchecked and can check it again.
+                    logger.log("WARN: Recurring \(uuid.prefix(8))… Phase-A timed out — leaving reminder unchecked")
+                    continue
                 } catch {
                     logger.log("WARN: Recurring \(uuid.prefix(8))… Phase-A failed (\(error)) — re-completing for retry")
                     try? await reminders.completeReminder(localId: pair.reminderLocalId)
@@ -433,6 +447,8 @@ struct SyncEngine {
                 logger.log("Status \(pair.lastStatus)→\(targetStatus) for \(uuid.prefix(8))… (Logseq wins)")
                 if targetStatus == "Done" {
                     try await reminders.completeReminder(localId: pair.reminderLocalId)
+                } else if Mapper.statusRemovesReminder(targetStatus) {
+                    // No move — the Canceled drop-off below deletes the reminder.
                 } else {
                     // Uncomplete if currently completed, then move to target list.
                     if live.isCompleted {
@@ -484,6 +500,16 @@ struct SyncEngine {
                 logger.log("Recurring \(uuid.prefix(8))… status deferred (recurring guard)")
                 updated.lastCompleted = live.isCompleted
                 updated.lastReminderMod = preWriteReminderMs
+            }
+
+            // ── Canceled drop-off ────────────────────────────────────────────
+            // Once the merge settles on Canceled (either side), delete the reminder and
+            // drop the pair. Step 6 never re-mirrors a Canceled block, and un-canceling
+            // it in Logseq mirrors a fresh reminder.
+            if Mapper.statusRemovesReminder(updated.lastStatus) {
+                logger.log("Block \(uuid.prefix(8))… is \(updated.lastStatus) → deleting reminder")
+                try await reminders.deleteReminder(localId: updated.reminderLocalId)
+                pairsToRemove.insert(uuid); continue
             }
 
             // ── Text/notes sync (one-way Logseq → Reminders) ────────────────

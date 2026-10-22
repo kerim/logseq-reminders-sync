@@ -98,6 +98,14 @@ public enum Mapper {
         status == "Done"
     }
 
+    /// Canceled is a drop-off status: once a pair settles on it, the reminder is
+    /// deleted (the Logseq task keeps its Canceled status), so canceled items never
+    /// linger in Reminders smart lists. Moving a reminder into the Canceled list is
+    /// how the user cancels from the Reminders side.
+    public static func statusRemovesReminder(_ status: String) -> Bool {
+        status == "Canceled" || status == "Cancelled"
+    }
+
     public static func openStatusToRestore(lastOpenStatus: String?) -> String {
         lastOpenStatus ?? "Doing"
     }

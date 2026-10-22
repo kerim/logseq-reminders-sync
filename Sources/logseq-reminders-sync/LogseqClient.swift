@@ -31,6 +31,9 @@ struct LogseqClient {
     let graph: String
     let logger: RunLogger?
     private(set) var propertyIdents: PropertyIdents?
+    /// Shared across copies of this client for the whole run: at most one helper
+    /// restart per run.
+    private let health = HelperHealth()
 
     init(cliPath: String, graph: String, logger: RunLogger? = nil) {
         self.cliPath = cliPath
@@ -742,44 +745,141 @@ struct LogseqClient {
 
     // MARK: - Shell execution
 
+    /// How long one CLI call may take. A healthy call finishes in a few seconds (the
+    /// CLI's own request timeout is 10 s); past this the db-worker-node helper is
+    /// treated as hung. Without a bound, a hung helper kept a sync running for minutes
+    /// and stopped Logseq.app from launching.
+    static let callTimeout: TimeInterval = 20
+    private static let readOnlyCommands: Set<String> = ["query", "list", "show", "search", "graph"]
+
     func run(_ args: [String]) async throws -> Any {
+        // Once a hang has ended this pass, fail every later call at once instead of
+        // waiting out another timeout per item.
+        // Thrown as .stopped (not a timeout): nothing was sent, so callers know
+        // the write definitely did not land.
+        if let stop = health.stopError { throw LogseqError.stopped(reason: stop) }
+        let result: CLIResult
+        do {
+            result = try await Self.execute(cliPath: cliPath, args: args, timeout: Self.callTimeout)
+        } catch CLIRunError.timedOut {
+            let label = args.prefix(2).joined(separator: " ")
+            // First hang this run: restart the helper so the rest of the pass (and the
+            // next scheduled run) talks to a fresh one. A second hang means the restart
+            // didn't help — give up rather than wait again.
+            guard !health.restartAttempted else {
+                logger?.log("Logseq CLI '\(label)' timed out again after restarting the helper — giving up")
+                health.stopError = .helperUnresponsive
+                throw LogseqError.helperUnresponsive
+            }
+            health.restartAttempted = true
+            logger?.log("Logseq CLI '\(label)' timed out after \(Int(Self.callTimeout))s — restarting the Logseq helper")
+            if let r = try? await Self.execute(
+                cliPath: cliPath, args: ["server", "restart", "-g", graph],
+                timeout: Self.callTimeout, captureOutput: false),
+               r.status == 0 {
+                logger?.log("Logseq helper restarted")
+            } else {
+                logger?.log("Logseq helper restart failed")
+            }
+            // A read is safe to repeat against the fresh helper. A write is not — it
+            // may have landed before the hang — so it ends the pass; the idempotency
+            // anchors make the next run pick up from there.
+            if Self.readOnlyCommands.contains(args.first ?? "") {
+                return try await run(args)
+            }
+            health.stopError = .timedOut(command: label)
+            throw LogseqError.timedOut(command: label)
+        }
+
+        guard result.status == 0 else {
+            let errStr = String(data: result.stderr, encoding: .utf8) ?? "(no stderr)"
+            let outStr = String(data: result.stdout, encoding: .utf8) ?? ""
+            throw LogseqError.cliFailed(
+                args: args.prefix(6).joined(separator: " "),
+                status: result.status,
+                output: "\(outStr)\n\(errStr)".trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        do {
+            return try JSONSerialization.jsonObject(with: result.stdout)
+        } catch {
+            throw LogseqError.jsonParse(String(data: result.stdout, encoding: .utf8) ?? "")
+        }
+    }
+
+    struct CLIResult {
+        let status: Int32
+        let stdout: Data
+        let stderr: Data
+    }
+
+    enum CLIRunError: Error { case timedOut }
+
+    /// Runs the CLI, draining stdout/stderr while it runs (so a large result can't
+    /// fill the pipe and stall the child), and kills it after `timeout`. On timeout
+    /// the call returns at once rather than waiting for pipe EOF: a helper the CLI
+    /// spawned may still hold the pipe open.
+    /// `captureOutput: false` discards output instead of piping it, for commands that
+    /// start a long-lived helper which would otherwise inherit and hold the pipe open.
+    static func execute(
+        cliPath: String, args: [String], timeout: TimeInterval, captureOutput: Bool = true
+    ) async throws -> CLIResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
         process.arguments = args
-
         let outPipe = Pipe()
         let errPipe = Pipe()
-        process.standardOutput = outPipe
-        process.standardError = errPipe
+        if captureOutput {
+            process.standardOutput = outPipe
+            process.standardError = errPipe
+        } else {
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+        }
 
         return try await withCheckedThrowingContinuation { continuation in
-            process.terminationHandler = { p in
-                let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-                let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            let once = ResumeOnce()
+            let group = DispatchGroup()
+            let buffers = OutputBuffers()
 
-                guard p.terminationStatus == 0 else {
-                    let errStr = String(data: errData, encoding: .utf8) ?? "(no stderr)"
-                    let outStr = String(data: outData, encoding: .utf8) ?? ""
-                    continuation.resume(throwing: LogseqError.cliFailed(
-                        args: args.prefix(6).joined(separator: " "),
-                        status: p.terminationStatus,
-                        output: "\(outStr)\n\(errStr)".trimmingCharacters(in: .whitespacesAndNewlines)
-                    ))
-                    return
-                }
-
-                do {
-                    let envelope = try JSONSerialization.jsonObject(with: outData)
-                    continuation.resume(returning: envelope)
-                } catch {
-                    continuation.resume(throwing: LogseqError.jsonParse(
-                        String(data: outData, encoding: .utf8) ?? ""))
-                }
-            }
+            group.enter()
+            process.terminationHandler = { _ in group.leave() }
             do {
                 try process.run()
             } catch {
-                continuation.resume(throwing: error)
+                once.run { continuation.resume(throwing: error) }
+                return
+            }
+            if captureOutput {
+                group.enter()
+                DispatchQueue.global().async {
+                    buffers.stdout = outPipe.fileHandleForReading.readDataToEndOfFile()
+                    group.leave()
+                }
+                group.enter()
+                DispatchQueue.global().async {
+                    buffers.stderr = errPipe.fileHandleForReading.readDataToEndOfFile()
+                    group.leave()
+                }
+            }
+
+            let timer = DispatchWorkItem {
+                once.run { continuation.resume(throwing: CLIRunError.timedOut) }
+                guard process.isRunning else { return }
+                process.terminate()
+                let pid = process.processIdentifier
+                DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+                    if process.isRunning { kill(pid, SIGKILL) }
+                }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: timer)
+
+            group.notify(queue: .global()) {
+                timer.cancel()
+                once.run {
+                    continuation.resume(returning: CLIResult(
+                        status: process.terminationStatus,
+                        stdout: buffers.stdout, stderr: buffers.stderr))
+                }
             }
         }
     }
@@ -875,6 +975,18 @@ enum LogseqError: Error, LocalizedError {
     case jsonParse(String)
     case unexpectedShape(String)
     case journalNotFound(String)
+    case timedOut(command: String)
+    case helperUnresponsive
+    /// Refused without contacting Logseq because an earlier hang ended this pass.
+    indirect case stopped(reason: LogseqError)
+
+    /// A hang, not an ordinary failure: a write may have landed even though it threw.
+    var isTimeout: Bool {
+        switch self {
+        case .timedOut, .helperUnresponsive: return true
+        default: return false
+        }
+    }
 
     var errorDescription: String? {
         switch self {
@@ -885,6 +997,41 @@ enum LogseqError: Error, LocalizedError {
         case .jsonParse(let raw): return "JSON parse error: \(raw.prefix(200))"
         case .unexpectedShape(let raw): return "Unexpected CLI response shape: \(raw.prefix(200))"
         case .journalNotFound(let msg): return msg
+        case .timedOut(let command):
+            return "Logseq stopped responding while saving a change ('\(command)'), so this sync stopped part-way. "
+                + "Its background helper has been restarted, and the next scheduled sync will finish the job. "
+                + "If a repeating task you had just checked off shows unchecked again, check it once more."
+        case .stopped(let reason):
+            return reason.errorDescription
+        case .helperUnresponsive:
+            return "Logseq's background helper isn't responding, even after a restart, so this sync stopped. "
+                + "Quit and reopen Logseq; the next scheduled sync will then run normally."
         }
+    }
+}
+
+// MARK: - CLI execution helpers
+
+private final class HelperHealth: @unchecked Sendable {
+    var restartAttempted = false
+    /// Set when a hang ends the pass; every later call throws it immediately.
+    var stopError: LogseqError?
+}
+
+private final class OutputBuffers: @unchecked Sendable {
+    var stdout = Data()
+    var stderr = Data()
+}
+
+/// Guarantees a continuation is resumed exactly once when a timer and process exit race.
+private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done = false
+    func run(_ body: () -> Void) {
+        lock.lock()
+        let first = !done
+        done = true
+        lock.unlock()
+        if first { body() }
     }
 }
