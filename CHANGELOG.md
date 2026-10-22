@@ -1,5 +1,19 @@
 # Changelog
 
+## Build 49 — 2026-10-22
+
+Includes builds 47 and 48, which were not released separately.
+
+### Changed
+- **Canceled reminders no longer linger in Reminders.** To cancel a task, move its reminder into **Logseq Canceled**. On the next sync the task is marked Canceled in Logseq and the reminder is removed, so it stops showing up in your smart lists. Canceling a task in Logseq removes its reminder the same way. The task stays in Logseq; set it back to an open status there and it gets a new reminder.
+- **A sync started while another is running now waits, then runs.** You no longer get "Another sync is running"; it shows "Waiting for the sync already running…" and goes ahead once the other sync finishes. This applies to `setup`, `switch-graph`, `uninstall` and `--backfill-links` too.
+
+### Fixed
+- **A newly installed version takes effect on its first sync.** Previously the sync could skip itself for up to an hour after an update ("No changes since last run"), because nothing in Logseq or Reminders had changed, so new behavior didn't apply until then.
+- **A stuck Logseq background helper can no longer hang the sync or stop Logseq from opening.** Each request to Logseq now has a 20-second limit. If Logseq's helper stops responding, the sync restarts it and retries; if it is still stuck, the sync stops within about a minute and says why, instead of running for minutes while Logseq.app refuses to launch.
+
+---
+
 ## Build 46 — 2026-06-30
 
 ### Fixed
