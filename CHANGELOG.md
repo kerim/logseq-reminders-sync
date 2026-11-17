@@ -1,5 +1,12 @@
 # Changelog
 
+## Build 50 — 2026-11-17
+
+### Fixed
+- **A sync that runs before you've opened Logseq that day no longer skips new reminders.** Previously, if today's journal page didn't exist yet, captures were skipped with a message to open Logseq. The sync now creates today's journal page itself (in your graph's date format) and files the reminder there. If a regular page already has today's date as its title, or Logseq doesn't recognise the title as a date, the sync says so and leaves the reminder for the next run; any stray page it made is moved to Logseq's recycle bin.
+
+---
+
 ## Build 49 — 2026-10-22
 
 Includes builds 47 and 48, which were not released separately.

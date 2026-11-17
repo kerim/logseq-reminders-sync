@@ -5,7 +5,7 @@ import SyncCore
 @main
 struct App {
     // BUILD 46 (feat: import reminder notes body on adopt)
-    static let buildVersion = "49"
+    static let buildVersion = "50"
     static let appVersion = "0.1.0"
 
     static func main() async throws {

@@ -466,8 +466,8 @@ struct LogseqClient {
 
     /// Resolve the journal page title for today by looking it up in the graph by
     /// `:block/journal-day` — format-agnostic and works for any user's date format.
-    /// If no journal exists for that day, attempts to create one; falls back to
-    /// throwing `LogseqError.journalNotFound` so the capture is skipped per-item.
+    /// If no journal exists for that day, creates one. If that can't be done safely it
+    /// throws, and the caller skips just that capture.
     func resolveJournalPageTitle(for date: Date = Date()) async throws -> String {
         // Local calendar throughout — matching how Logseq keys journal-day by civil date.
         var cal = Calendar(identifier: .gregorian)
@@ -519,9 +519,9 @@ struct LogseqClient {
                       comps.year!, comps.month!, comps.day!)
     }
 
-    /// Attempt to create a journal for `date`. Validates the renderer against
-    /// existing journals before creating. Throws `journalNotFound` on any failure
-    /// so the per-item catch in SyncEngine skips just this capture.
+    /// Create the journal for `date`. Validates the renderer against existing journals
+    /// first, so an unsupported title format never reaches the graph; then
+    /// `ensureJournalPage` guards the write itself (title clash, title not read as a date).
     private func createJournalIfPossible(for date: Date, day: Int, calendar: Calendar) async throws -> String {
         let format = await fetchJournalTitleFormat()
 
@@ -538,12 +538,61 @@ struct LogseqClient {
                 "Open Logseq to create the journal page.")
         }
 
-        // PoC required before shipping create: confirm which CLI command produces a
-        // proper journal (journal-day + Journal tag). Implemented below after PoC.
-        logger?.log("INFO: journal '\(title)' (\(day)) is missing — auto-create not yet implemented. Open Logseq to create it.")
-        throw LogseqError.journalNotFound(
-            "Today's journal page '\(title)' does not exist yet — open Logseq " +
-            "once and it will sync on the next run.")
+        logger?.log("Today's journal '\(title)' (\(day)) is missing — creating it")
+        let created = try await ensureJournalPage(day: day, title: title, ops: CLIJournalPageOps(client: self))
+        logger?.log("Created today's journal '\(created)'")
+        return created
+    }
+
+    /// `JournalPageOps` over the `logseq` CLI, for `ensureJournalPage`.
+    private struct CLIJournalPageOps: JournalPageOps {
+        let client: LogseqClient
+
+        func journalTitle(day: Int) async throws -> String? {
+            let result = try await client.query(
+                "[:find ?title :where [?p :block/journal-day \(day)] [?p :block/title ?title]]")
+            guard let rows = result as? [[Any]] else {
+                throw LogseqError.unexpectedShape("journal-day \(day) title: \(String(describing: result).prefix(200))")
+            }
+            return rows.first?.first as? String
+        }
+
+        func pageExists(lowercasedTitle: String) async throws -> Bool {
+            let result = try await client.query(
+                "[:find ?p :where [?p :block/name \"\(Mapper.ednString(lowercasedTitle))\"]]")
+            guard let rows = result as? [[Any]] else {
+                throw LogseqError.unexpectedShape("page-name lookup: \(String(describing: result).prefix(200))")
+            }
+            return !rows.isEmpty
+        }
+
+        func createPage(title: String) async throws -> Int {
+            let result = try await client.run([
+                "upsert", "page", "-g", client.graph, "--page", title, "--output", "json"
+            ])
+            guard let dict = result as? [String: Any],
+                  let data = dict["data"] as? [String: Any],
+                  let ids = data["result"] as? [Any],
+                  let id = ids.first.flatMap(client.jsonInt64) else {
+                throw LogseqError.unexpectedShape("create journal page: \(String(describing: result).prefix(200))")
+            }
+            return Int(id)
+        }
+
+        func journalDay(ofPage id: Int) async throws -> Int? {
+            let result = try await client.query(
+                "[:find ?d :where [\(id) :block/journal-day ?d]]")
+            guard let rows = result as? [[Any]] else {
+                throw LogseqError.unexpectedShape("journal-day of \(id): \(String(describing: result).prefix(200))")
+            }
+            return rows.first?.first.flatMap(client.jsonInt64).map { Int($0) }
+        }
+
+        func recyclePage(id: Int) async throws {
+            _ = try await client.run([
+                "remove", "page", "-g", client.graph, "--id", String(id), "--output", "json"
+            ])
+        }
     }
 
     /// Fetch the graph's journal title format setting.
